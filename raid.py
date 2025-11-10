@@ -33,10 +33,12 @@ def calculate_effectiveness(raid_type1, raid_type2=None):
             effective_attackers.append(attacker)
     return effective_attackers
 
-# Function to generate search string
+# Function to generate search string in the desired format
 def generate_search_string(effective_attackers):
-    search_strings = [f"@{i}{attacker}" for i in range(1, 4) for attacker in effective_attackers]
-    return ",".join(search_strings)
+    part1 = [f"@1{attacker}" for attacker in effective_attackers]
+    part2_and_3 = [f"@2{attacker},@3{attacker}" for attacker in effective_attackers]
+    search_string = f"{','.join(part1)}&{','.join(part2_and_3)}"
+    return search_string
 
 # Main function to parse arguments and calculate effective attackers
 def main():
