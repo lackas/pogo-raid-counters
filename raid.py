@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 
-import cgi
-import cgitb
 import html
-cgitb.enable()  # Enable debugging for CGI scripts
+from urllib.parse import parse_qs
+from wsgiref.handlers import CGIHandler
 
 # List of all Pokémon Go types
 pokemon_types = [
@@ -50,6 +49,8 @@ def calculate_effectiveness(raid_type1, raid_type2=None):
 
 # Function to generate search string in the desired format
 def generate_search_string(effective_attackers):
+    if not effective_attackers:
+        return ""
     part1 = [f"@1{attacker}" for attacker in effective_attackers]
     part2_and_3 = [f"@2{attacker},@3{attacker}" for attacker in effective_attackers]
     search_string = f"{','.join(part1)}&{','.join(part2_and_3)}"
@@ -57,36 +58,46 @@ def generate_search_string(effective_attackers):
 
 # Function to generate dropdown HTML
 def generate_dropdown(name, selected_value=None):
-    options = ''.join([f'<option value="{ptype}"{" selected" if ptype == selected_value else ""}>{ptype.capitalize()}</option>' for ptype in pokemon_types])
-    return f'<select name="{name}"><option value="">--Select--</option>{options}</select>'
+    sorted_types = sorted(pokemon_types)
+    options = ''.join([f'<option value="{ptype}"{" selected" if ptype == selected_value else ""}>{ptype.capitalize()}</option>' for ptype in sorted_types])
+    return f'<select id="{name}" name="{name}"><option value="">--Select--</option>{options}</select>'
 
-# Main function to handle CGI request
-def main():
-    form = cgi.FieldStorage()
-    raid_type1 = html.escape( form.getvalue('raid_type1', '') )
-    raid_type2 = html.escape( form.getvalue('raid_type2', '') )
+# Ensure only canonical type names are used when rendering output
+def normalize_type(value):
+    value = (value or '').strip().lower()
+    return value if value in pokemon_types else ''
 
-    print("Content-Type: text/html")
-    print()
-    print("<html><body>")
-    print('<meta name="viewport" content="width=device-width, initial-scale=1.0">')
+
+def application(environ, start_response):
+    params = parse_qs(environ.get('QUERY_STRING', ''), keep_blank_values=True)
+    raid_type1 = normalize_type(params.get('raid_type1', [''])[0])
+    raid_type2 = normalize_type(params.get('raid_type2', [''])[0])
+
+    body_parts = [
+        '<html><body>',
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+    ]
 
     if raid_type1:
-        ( effective_attackers, double_attackers ) = calculate_effectiveness(raid_type1, raid_type2)
-        search_string = generate_search_string(effective_attackers)
-        print(f"""
-            <h1>Effective Attackers for Raid Type(s): {raid_type1.capitalize()} {raid_type2.capitalize() if raid_type2 else ''}</h1>
-            <p>Effective attackers: {', '.join(effective_attackers)}</p>
-            <p>Search string:<br/><textarea rows=1 style="width:100%;">{search_string}</textarea></p>
-        """)
-        if double_attackers:
-            search_string = generate_search_string(double_attackers)
-            print(f"""
-            <p>Double effective:<br/><textarea rows=1 style="width:100%;">{search_string}</textarea></p>
-            """)
-        print("<br><br>")
+        (effective_attackers, double_attackers) = calculate_effectiveness(raid_type1, raid_type2 or None)
+        raid_heading = html.escape(raid_type1.capitalize())
+        if raid_type2:
+            raid_heading += f" {html.escape(raid_type2.capitalize())}"
+        body_parts.append(f'<h1>Effective Attackers for Raid Type(s): {raid_heading}</h1>')
+        if effective_attackers:
+            search_string = generate_search_string(effective_attackers)
+            attackers = ', '.join(effective_attackers)
+            body_parts.append(f'<p>Effective attackers: {attackers}</p>')
+            body_parts.append(f'<p>Search string:<br/><textarea rows="1" style="width:100%;">{search_string}</textarea></p>')
+        else:
+            body_parts.append('<p>No effective attackers found.</p>')
 
-    print(f"""
+        if double_attackers:
+            double_search = generate_search_string(double_attackers)
+            body_parts.append(f'<p>Double effective:<br/><textarea rows="1" style="width:100%;">{double_search}</textarea></p>')
+        body_parts.append('<br><br>')
+
+    body_parts.append(f"""
         <h1>Enter Raid Types</h1>
         <form method="get" action="">
             <label for="raid_type1">Raid Type 1:</label>
@@ -100,6 +111,10 @@ def main():
     </body></html>
     """)
 
-if __name__ == '__main__':
-    main()
+    response_body = ''.join(body_parts)
+    start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8'), ('Content-Length', str(len(response_body.encode('utf-8'))))])
+    return [response_body.encode('utf-8')]
 
+
+if __name__ == '__main__':
+    CGIHandler().run(application)
