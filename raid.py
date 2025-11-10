@@ -18,6 +18,32 @@ DOUBLE_NOT_VERY_EFFECTIVE = NOT_VERY_EFFECTIVE ** 2  # 0.390625
 NEUTRAL = 1.0
 DOUBLE_EFFECTIVE_THRESHOLD = 2.0
 
+type_color_palette = {
+    "normal": {"bg": "#a8a77a", "text": "#1f1f1f"},
+    "fire": {"bg": "#ee8130", "text": "#ffffff"},
+    "water": {"bg": "#6390f0", "text": "#ffffff"},
+    "electric": {"bg": "#f7d02c", "text": "#1f1f1f"},
+    "grass": {"bg": "#7ac74c", "text": "#1f1f1f"},
+    "ice": {"bg": "#96d9d6", "text": "#1f1f1f"},
+    "fighting": {"bg": "#c22e28", "text": "#ffffff"},
+    "poison": {"bg": "#a33ea1", "text": "#ffffff"},
+    "ground": {"bg": "#e2bf65", "text": "#1f1f1f"},
+    "flying": {"bg": "#a98ff3", "text": "#ffffff"},
+    "psychic": {"bg": "#f95587", "text": "#ffffff"},
+    "bug": {"bg": "#a6b91a", "text": "#1f1f1f"},
+    "rock": {"bg": "#b6a136", "text": "#1f1f1f"},
+    "ghost": {"bg": "#735797", "text": "#ffffff"},
+    "dragon": {"bg": "#6f35fc", "text": "#ffffff"},
+    "dark": {"bg": "#705746", "text": "#ffffff"},
+    "steel": {"bg": "#b7b7ce", "text": "#1f1f1f"},
+    "fairy": {"bg": "#d685ad", "text": "#1f1f1f"}
+}
+
+TYPE_BADGE_STYLES = '\n        '.join([
+    f'.type-{ptype} {{ background-color: {cfg["bg"]}; color: {cfg["text"]}; }}'
+    for ptype, cfg in type_color_palette.items()
+])
+
 # Type effectiveness chart
 type_effectiveness = {
     "normal": {"rock": NOT_VERY_EFFECTIVE, "ghost": DOUBLE_NOT_VERY_EFFECTIVE, "steel": NOT_VERY_EFFECTIVE},
@@ -44,15 +70,18 @@ type_effectiveness = {
 def calculate_effectiveness(raid_type1, raid_type2=None):
     effective_attackers = []
     double_attackers = []
+    resisting_attackers = []
     for attacker, defender_dict in type_effectiveness.items():
         effectiveness1 = defender_dict.get(raid_type1, NEUTRAL)
         effectiveness2 = defender_dict.get(raid_type2, NEUTRAL) if raid_type2 else NEUTRAL
         combined_effectiveness = effectiveness1 * effectiveness2
         if combined_effectiveness > NEUTRAL:
             effective_attackers.append(attacker)
+        elif combined_effectiveness < NEUTRAL:
+            resisting_attackers.append(attacker)
         if combined_effectiveness > DOUBLE_EFFECTIVE_THRESHOLD:
             double_attackers.append(attacker)
-    return ( effective_attackers, double_attackers )
+    return (effective_attackers, double_attackers, resisting_attackers)
 
 # Function to generate search string in the desired format
 def generate_search_string(effective_attackers):
@@ -80,6 +109,13 @@ def render_copy_block(label_text, content, element_id):
         f'</div>'
     )
 
+
+def render_type_badges(label_text, types):
+    if not types:
+        return f'<p>{label_text}: None</p>'
+    badges = ''.join([f'<span class="type-badge type-{ptype}">{ptype.capitalize()}</span>' for ptype in types])
+    return f'<p>{label_text}: {badges}</p>'
+
 # Ensure only canonical type names are used when rendering output
 def normalize_type(value):
     value = (value or '').strip().lower()
@@ -105,9 +141,11 @@ def application(environ, start_response):
         '    <title>Pokémon Go Raid Helper</title>',
         '    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">',
         '    <style>',
+        '        .type-badge { display: inline-flex; align-items: center; padding: 0.2rem 0.85rem; border-radius: 999px; font-weight: 600; text-transform: capitalize; font-size: 0.95rem; margin: 0 0.35rem 0.35rem 0; }',
         '        .copy-row { display: flex; gap: 0.5rem; align-items: center; }',
         '        .copy-row textarea { flex: 1; }',
         '        .copy-row button { white-space: nowrap; }',
+        f'        {TYPE_BADGE_STYLES}',
         '    </style>',
         '</head>',
         '<body>',
@@ -115,7 +153,7 @@ def application(environ, start_response):
     ]
 
     if raid_type1:
-        (effective_attackers, double_attackers) = calculate_effectiveness(raid_type1, raid_type2 or None)
+        (effective_attackers, double_attackers, resisting_attackers) = calculate_effectiveness(raid_type1, raid_type2 or None)
         raid_heading = html.escape(raid_type1.capitalize())
         if raid_type2:
             raid_heading += f" {html.escape(raid_type2.capitalize())}"
@@ -123,13 +161,16 @@ def application(environ, start_response):
         body_parts.append(f'<h1>Effective Attackers for Raid Type(s): {raid_heading}</h1>')
         if effective_attackers:
             search_string = generate_search_string(effective_attackers)
-            attackers = ', '.join(effective_attackers)
-            body_parts.append(f'<p>Effective attackers: {attackers}</p>')
+            body_parts.append(render_type_badges('Effective attackers', effective_attackers))
             body_parts.append(render_copy_block('Search string', search_string, 'search-string'))
         else:
             body_parts.append('<p>No effective attackers found.</p>')
 
+        if resisting_attackers:
+            body_parts.append(render_type_badges('Resistances', resisting_attackers))
+
         if double_attackers:
+            body_parts.append(render_type_badges('Double effective attackers', double_attackers))
             double_search = generate_search_string(double_attackers)
             body_parts.append(render_copy_block('Double effective', double_search, 'double-search-string'))
         body_parts.append('</section>')
