@@ -69,6 +69,17 @@ def generate_dropdown(name, selected_value=None):
     options = ''.join([f'<option value="{ptype}"{" selected" if ptype == selected_value else ""}>{ptype.capitalize()}</option>' for ptype in sorted_types])
     return f'<select id="{name}" name="{name}"><option value="">--Select--</option>{options}</select>'
 
+
+def render_copy_block(label_text, content, element_id):
+    escaped_content = html.escape(content)
+    return (
+        f'<label for="{element_id}">{label_text}</label>'
+        f'<div class="copy-row">'
+        f'<textarea id="{element_id}" rows="1" readonly>{escaped_content}</textarea>'
+        f'<button type="button" class="secondary outline" data-copy-target="{element_id}">Copy</button>'
+        f'</div>'
+    )
+
 # Ensure only canonical type names are used when rendering output
 def normalize_type(value):
     value = (value or '').strip().lower()
@@ -93,6 +104,11 @@ def application(environ, start_response):
         '    <meta name="viewport" content="width=device-width, initial-scale=1.0">',
         '    <title>Pokémon Go Raid Helper</title>',
         '    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">',
+        '    <style>',
+        '        .copy-row { display: flex; gap: 0.5rem; align-items: center; }',
+        '        .copy-row textarea { flex: 1; }',
+        '        .copy-row button { white-space: nowrap; }',
+        '    </style>',
         '</head>',
         '<body>',
         '<main class="container">'
@@ -109,13 +125,13 @@ def application(environ, start_response):
             search_string = generate_search_string(effective_attackers)
             attackers = ', '.join(effective_attackers)
             body_parts.append(f'<p>Effective attackers: {attackers}</p>')
-            body_parts.append(f'<label>Search string<textarea rows="1">{search_string}</textarea></label>')
+            body_parts.append(render_copy_block('Search string', search_string, 'search-string'))
         else:
             body_parts.append('<p>No effective attackers found.</p>')
 
         if double_attackers:
             double_search = generate_search_string(double_attackers)
-            body_parts.append(f'<label>Double effective<textarea rows="1">{double_search}</textarea></label>')
+            body_parts.append(render_copy_block('Double effective', double_search, 'double-search-string'))
         body_parts.append('</section>')
 
     body_parts.append(f"""
@@ -134,6 +150,32 @@ def application(environ, start_response):
             </form>
         </section>
     </main>
+    """)
+
+    body_parts.append("""
+    <script>
+    document.addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-copy-target]');
+        if (!button) {
+            return;
+        }
+        const targetId = button.getAttribute('data-copy-target');
+        const textarea = document.getElementById(targetId);
+        if (!textarea) {
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(textarea.value);
+            const originalLabel = button.textContent;
+            button.textContent = 'Copied!';
+            setTimeout(() => {
+                button.textContent = originalLabel;
+            }, 1500);
+        } catch (err) {
+            console.error('Copy failed', err);
+        }
+    });
+    </script>
     </body></html>
     """)
 
