@@ -105,10 +105,11 @@ def generate_dropdown(name, selected_value=None):
 
 def render_copy_block(label_text, content, element_id):
     escaped_content = html.escape(content)
+    rows = max(1, min(6, (len(content) // 80) + 1))
     return (
-        f'<label for="{element_id}">{label_text}</label>'
+        # f'<label for="{element_id}">{label_text}</label>'
         f'<div class="copy-row">'
-        f'<textarea id="{element_id}" rows="1" readonly>{escaped_content}</textarea>'
+        f'<textarea id="{element_id}" rows="{rows}" readonly>{escaped_content}</textarea>'
         f'<button type="button" class="secondary outline" data-copy-target="{element_id}">Copy</button>'
         f'</div>'
     )
@@ -272,8 +273,22 @@ def difficulty_class(level):
 
 def application(environ, start_response):
     params = parse_qs(environ.get('QUERY_STRING', ''), keep_blank_values=True)
-    raid_type1 = normalize_type(params.get('raid_type1', [''])[0])
-    raid_type2 = normalize_type(params.get('raid_type2', [''])[0])
+    path_info = environ.get('PATH_INFO', '').strip('/')
+    path_parts = [normalize_type(part) for part in path_info.split('/') if part]
+    raid_type1 = path_parts[0] if path_parts else ''
+    raid_type2 = path_parts[1] if len(path_parts) > 1 else ''
+
+    form_type1 = normalize_type(params.get('raid_type1', [''])[0])
+    form_type2 = normalize_type(params.get('raid_type2', [''])[0])
+
+    if not raid_type1 and form_type1:
+        redirect_path = environ.get('SCRIPT_NAME', '')
+        if form_type1:
+            redirect_path += f"/{form_type1}"
+        if form_type2 and form_type2 != form_type1:
+            redirect_path += f"/{form_type2}"
+        start_response('302 Found', [('Location', redirect_path or environ.get('SCRIPT_NAME', ''))])
+        return [b'']
 
     if not raid_type1 and raid_type2:
         raid_type1, raid_type2 = raid_type2, ''
@@ -376,10 +391,12 @@ def application(environ, start_response):
         """ + ''.join(raid_cards) + """</div></section>
         """
 
+    form_action = html.escape(environ.get('SCRIPT_NAME', ''))
+
     body_parts.append(f"""
         <section>
             <h2>Enter Raid Types</h2>
-            <form method="get" action="" class="raid-form">
+            <form method="get" action="{form_action}" class="raid-form">
                 <label for="raid_type1">
                     Raid Type 1
                     {generate_dropdown('raid_type1', raid_type1)}
