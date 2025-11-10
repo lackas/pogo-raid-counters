@@ -1,3 +1,5 @@
+import argparse
+
 # Type effectiveness chart
 type_effectiveness = {
     "normal": {"rock": 0.625, "ghost": 0.390625, "steel": 0.625},
@@ -36,13 +38,20 @@ def generate_search_string(effective_attackers):
     search_strings = [f"@{i}{attacker}" for i in range(1, 4) for attacker in effective_attackers]
     return ",".join(search_strings)
 
-# Example usage
-raid_type1 = "water"  # First type of the raid boss
-# raid_type2 = "ground"  # Second type of the raid boss (optional)
-raid_type2 = None
-effective_attackers = calculate_effectiveness(raid_type1, raid_type2)
-search_string = generate_search_string(effective_attackers)
+# Main function to parse arguments and calculate effective attackers
+def main():
+    parser = argparse.ArgumentParser(description='Calculate effective attackers for a Pokémon Go raid.')
+    parser.add_argument('raid_type1', type=str, help='First type of the raid boss')
+    parser.add_argument('raid_type2', type=str, nargs='?', default=None, help='Second type of the raid boss (optional)')
 
-print(f"Effective attackers: {effective_attackers}")
-print(f"Search string: {search_string}")
+    args = parser.parse_args()
+
+    effective_attackers = calculate_effectiveness(args.raid_type1, args.raid_type2)
+    search_string = generate_search_string(effective_attackers)
+
+    print(f"Effective attackers: {effective_attackers}")
+    print(f"Search string: {search_string}")
+
+if __name__ == '__main__':
+    main()
 
