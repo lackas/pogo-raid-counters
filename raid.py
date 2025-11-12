@@ -145,6 +145,8 @@ def load_available_raids(path="available_raids.json"):
         start = parse_timestamp(raid.get("start_utc"))
         end = parse_timestamp(raid.get("end_utc"))
         diff_text, diff_value = format_difficulty_label(raid.get("difficulty"))
+        if end and end < now:
+            continue
         entry = {
             "pokemon": raid.get("pokemon", "Unknown"),
             "image": raid.get("image"),
@@ -334,11 +336,11 @@ def application(environ, start_response):
 
     if raid_type1:
         (effective_attackers, double_attackers, resisting_attackers) = calculate_effectiveness(raid_type1, raid_type2 or None)
-        raid_heading = html.escape(raid_type1.capitalize())
-        if raid_type2:
-            raid_heading += f" {html.escape(raid_type2.capitalize())}"
+        raid_heading = render_type_badges('', [raid_type1] + ([raid_type2] if raid_type2 else []))
+        raid_heading = raid_heading or html.escape(raid_type1.capitalize())
         body_parts.append('<section class="results">')
-        body_parts.append(f'<h1>Effective Attackers for Raid Type(s): {raid_heading}</h1>')
+        body_parts.append('<h1>Effective Attackers for Raid Type(s):</h1>')
+        body_parts.append(raid_heading)
         if effective_attackers:
             search_string = generate_search_string(effective_attackers)
             body_parts.append(render_type_badges('Effective attackers', effective_attackers))
