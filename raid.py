@@ -115,11 +115,16 @@ def render_copy_block(label_text, content, element_id):
     )
 
 
-def render_type_badges(label_text, types):
+def render_type_badges(label_text, types, tag='p'):
+    tag = tag or 'p'
+    escaped_label = html.escape(label_text) if label_text else ''
     if not types:
-        return f'<p>{label_text}: None</p>'
+        if escaped_label:
+            return f'<{tag}>{escaped_label}: None</{tag}>'
+        return f'<{tag}>None</{tag}>'
     badges = ''.join([f'<span class="type-badge type-{ptype}">{ptype.capitalize()}</span>' for ptype in types])
-    return f'<p>{label_text}: {badges}</p>'
+    prefix = f'{escaped_label}: ' if escaped_label else ''
+    return f'<{tag}>{prefix}{badges}</{tag}>'
 
 # Ensure only canonical type names are used when rendering output
 def normalize_type(value):
@@ -336,11 +341,9 @@ def application(environ, start_response):
 
     if raid_type1:
         (effective_attackers, double_attackers, resisting_attackers) = calculate_effectiveness(raid_type1, raid_type2 or None)
-        raid_heading = render_type_badges('', [raid_type1] + ([raid_type2] if raid_type2 else []))
-        raid_heading = raid_heading or html.escape(raid_type1.capitalize())
+        heading_types = [raid_type1] + ([raid_type2] if raid_type2 else [])
         body_parts.append('<section class="results">')
-        body_parts.append('<h1>Effective Attackers for Raid Type(s):</h1>')
-        body_parts.append(raid_heading)
+        body_parts.append(render_type_badges('Effective Attackers for Raid Type(s)', heading_types, tag='h1'))
         if effective_attackers:
             search_string = generate_search_string(effective_attackers)
             body_parts.append(render_type_badges('Effective attackers', effective_attackers))
