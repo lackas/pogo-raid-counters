@@ -312,6 +312,7 @@ def application(environ, start_response):
         '    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">',
         '    <style>',
         '        .type-badge { display: inline-flex; align-items: center; padding: 0.2rem 0.85rem; border-radius: 999px; font-weight: 600; text-transform: capitalize; font-size: 0.95rem; margin: 0 0.35rem 0.35rem 0; }',
+        '        .results h1 .type-badge { font-size: inherit; }',
         '        .copy-row { display: flex; gap: 0.5rem; align-items: center; }',
         '        .copy-row textarea { flex: 1; }',
         '        .copy-row button { white-space: nowrap; }',
