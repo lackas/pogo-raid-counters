@@ -132,11 +132,12 @@ def normalize_type(value):
     return value if value in pokemon_types else ''
 
 
-def load_available_raids(path="available_raids.json"):
-    if not os.path.exists(path):
+def load_available_raids(path=None):
+    data_path = path or os.environ.get("RAID_DATA_PATH") or "/data/available_raids.json"
+    if not os.path.exists(data_path):
         return []
     try:
-        with open(path, "r", encoding="utf-8") as fp:
+        with open(data_path, "r", encoding="utf-8") as fp:
             data = json.load(fp)
     except (OSError, json.JSONDecodeError):
         return []

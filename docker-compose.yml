@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  raid-web:
+    build: .
+    image: raid-app:latest
+    volumes:
+      - raids-data:/data
+#    ports:
+#      - "8000:8000"
+    networks:
+      - wtb-shared
+
+volumes:
+  raids-data:
+    external: false
+
+networks:
+  wtb-shared:
+    external: true

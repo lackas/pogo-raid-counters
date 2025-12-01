@@ -1,0 +1,1 @@
+0 3 * * * python /app/availableraids.py --output /data/available_raids.json >>/tmp/availableraids.log 2>&1
