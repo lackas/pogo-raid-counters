@@ -5,6 +5,7 @@ import json
 import math
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs
 from wsgiref.handlers import CGIHandler
 
@@ -132,6 +133,17 @@ def normalize_type(value):
     return value if value in pokemon_types else ''
 
 
+def parse_local_timestamp(value, local_tz):
+    """Parse a localized timestamp like 'Sep 16, 2025 6:00 AM' in the given timezone."""
+    if not value:
+        return None
+    try:
+        dt = datetime.strptime(value, "%b %d, %Y %I:%M %p")
+        return dt.replace(tzinfo=local_tz)
+    except ValueError:
+        return None
+
+
 def load_available_raids(path=None):
     data_path = path or os.environ.get("RAID_DATA_PATH") or "/data/available_raids.json"
     if not os.path.exists(data_path):
@@ -142,6 +154,12 @@ def load_available_raids(path=None):
     except (OSError, json.JSONDecodeError):
         return []
     now = datetime.now(timezone.utc)
+    # Timestamps from the source site appear to use California time; default to that unless overridden.
+    source_tz_name = os.environ.get("RAID_SOURCE_TZ", "America/Los_Angeles")
+    try:
+        local_tz = ZoneInfo(source_tz_name)
+    except Exception:
+        local_tz = ZoneInfo("UTC")
     active = []
     upcoming = []
     for raid in data:
@@ -150,6 +168,13 @@ def load_available_raids(path=None):
             continue
         start = parse_timestamp(raid.get("start_utc"))
         end = parse_timestamp(raid.get("end_utc"))
+        # Prefer local timestamps if provided, converting to UTC for consistent comparison.
+        start_local = parse_local_timestamp(raid.get("start_local"), local_tz)
+        end_local = parse_local_timestamp(raid.get("end_local"), local_tz)
+        if start_local:
+            start = start_local.astimezone(timezone.utc)
+        if end_local:
+            end = end_local.astimezone(timezone.utc)
         diff_text, diff_value = format_difficulty_label(raid.get("difficulty"))
         if end and end < now:
             continue
