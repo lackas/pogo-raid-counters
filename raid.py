@@ -494,7 +494,14 @@ def application(environ, start_response):
     """)
 
     response_body = ''.join(body_parts)
-    start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8'), ('Content-Length', str(len(response_body.encode('utf-8'))))])
+    response_headers = [
+        ('Content-Type', 'text/html; charset=utf-8'),
+        ('Content-Length', str(len(response_body.encode('utf-8')))),
+        ('X-Content-Type-Options', 'nosniff'),
+        ('X-Frame-Options', 'DENY'),
+        ('Referrer-Policy', 'strict-origin-when-cross-origin'),
+    ]
+    start_response('200 OK', response_headers)
     return [response_body.encode('utf-8')]
 
 
