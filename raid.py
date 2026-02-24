@@ -225,13 +225,19 @@ def is_tier_five_or_higher(tier_label):
 def humanize_schedule(now, start, end):
     if start and start > now:
         diff_hours = (start - now).total_seconds() / 3600
+        duration_suffix = ""
+        if end and end > start:
+            duration_hours = (end - start).total_seconds() / 3600
+            if duration_hours < 24:
+                dur_h = max(1, round(duration_hours))
+                duration_suffix = f" for {dur_h}h"
         if diff_hours <= 0:
-            return "Starts soon"
+            return "Starts soon" + duration_suffix
         if diff_hours >= 24:
             days = math.ceil(diff_hours / 24)
-            return f"Starts in {days} day{'s' if days != 1 else ''}"
+            return f"Starts in {days} day{'s' if days != 1 else ''}" + duration_suffix
         hours = math.ceil(diff_hours)
-        return f"Starts in {hours} hour{'s' if hours != 1 else ''}"
+        return f"Starts in {hours} hour{'s' if hours != 1 else ''}" + duration_suffix
     if end and end > now:
         diff_hours = (end - now).total_seconds() / 3600
         if diff_hours <= 0:
