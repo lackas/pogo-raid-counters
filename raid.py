@@ -4,6 +4,7 @@ import html
 import json
 import math
 import os
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs
@@ -273,12 +274,15 @@ def format_difficulty_label(value):
         num = None
     if num and num > 0:
         return f"{num}+ trainers", num
+    # Legacy scraped strings like "10+ trainers" — extract the number
     text = str(value).strip()
     if not text:
         return "", None
-    if not text.endswith("+ trainers"):
-        text = f"{text}+ trainers"
-    return text, num
+    m = re.match(r"(\d+)\+?\s*trainers", text, re.IGNORECASE)
+    if m:
+        num = int(m.group(1))
+        return f"{num}+ trainers", num
+    return "", None
 
 
 def classify_tier_badge(tier_label):

@@ -223,7 +223,7 @@ def build_raid_entries(
                 "end_local": raid.get("localEndDate"),
                 "start_utc": format_timestamp(raid.get("startDate"), None),
                 "end_utc": format_timestamp(raid.get("endDate"), None),
-                "difficulty": display.get("difficulty") or humanize_tier(raid.get("tier", "")),
+                "difficulty": display.get("difficulty"),
                 "tier": humanize_tier(raid.get("tier", "")),
                 "tier_raw": raid.get("tier"),
                 "pokebattler_url": urljoin(base_url, f"/raids/{slug}"),
@@ -311,7 +311,7 @@ def fetch_estimator(
         resp = session.get(url, timeout=30)
         resp.raise_for_status()
         data = resp.json()
-        return data["attackers"][0]["total"]["estimator"]
+        return data["attackers"][0]["randomMove"]["total"]["estimator"]
     except (requests.RequestException, KeyError, IndexError, ValueError) as exc:
         log.warning("Failed to fetch estimator for %s: %s", slug, exc)
         return None
