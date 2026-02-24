@@ -268,7 +268,7 @@ def format_difficulty_label(value):
         return "", None
     num = None
     try:
-        num = int(float(value))
+        num = math.ceil(float(value))
     except (ValueError, TypeError):
         num = None
     if num and num > 0:

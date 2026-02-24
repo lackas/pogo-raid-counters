@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import math
 import re
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -16,6 +18,7 @@ from urllib.parse import unquote, urljoin
 import requests
 
 POKEBATTLER_RAIDS_URL = "https://www.pokebattler.com/raids"
+FIGHT_API_BASE = "https://fight.pokebattler.com"
 DEFAULT_OUTPUT = "available_raids.json"
 USER_AGENT = "Mozilla/5.0 (compatible; RaidFetcher/1.0; +https://www.pokebattler.com/)"
 
@@ -289,6 +292,46 @@ def populate_missing_images(
             cache[slug] = None
 
 
+log = logging.getLogger(__name__)
+
+
+def fetch_estimator(
+    slug: str, tier_raw: str, session: requests.Session
+) -> Optional[float]:
+    """Fetch the best-case Pokebattler Estimator for a raid boss."""
+    url = (
+        f"{FIGHT_API_BASE}/raids/defenders/{slug}/levels/{tier_raw}"
+        "/attackers/levels/50/strategies/CINEMATIC_ATTACK_WHEN_POSSIBLE"
+        "/DEFENSE_RANDOM_MC?sort=ESTIMATOR&weatherCondition=NO_WEATHER"
+        "&dodgeStrategy=DODGE_REACTION_TIME&aggregation=AVERAGE"
+        "&includeLegendary=true&includeShadow=true&includeMegas=true"
+        "&attackerTypes=POKEMON_TYPE_ALL"
+    )
+    try:
+        resp = session.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["attackers"][0]["total"]["estimator"]
+    except (requests.RequestException, KeyError, IndexError, ValueError) as exc:
+        log.warning("Failed to fetch estimator for %s: %s", slug, exc)
+        return None
+
+
+def populate_estimators(
+    raids: List[Dict[str, Optional[str]]], session: requests.Session
+) -> None:
+    """Replace HTML-scraped difficulty with the fight-API estimator."""
+    for raid in raids:
+        slug = raid.get("_slug")
+        tier_raw = raid.get("tier_raw")
+        if not slug or not tier_raw:
+            continue
+        estimator = fetch_estimator(slug, tier_raw, session)
+        if estimator is not None:
+            raid["difficulty"] = str(math.ceil(estimator))
+            raid["difficulty_raw"] = estimator
+
+
 def write_output(path: Path, payload: List[Dict[str, Optional[str]]]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -308,6 +351,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         display_map = extract_display_metadata(html)
         raids = build_raid_entries(data_blob, display_map, args.url)
         populate_missing_images(raids, session, args.url)
+        populate_estimators(raids, session)
     for raid in raids:
         raid.pop("_slug", None)
     output_path = Path(args.output)
