@@ -311,16 +311,16 @@ def application(environ, start_response):
     raid_type1 = path_parts[0] if path_parts else ''
     raid_type2 = path_parts[1] if len(path_parts) > 1 else ''
 
+    # Legacy query-param support: redirect to clean path URL
     form_type1 = normalize_type(params.get('raid_type1', [''])[0])
     form_type2 = normalize_type(params.get('raid_type2', [''])[0])
 
-    if not raid_type1 and form_type1:
+    if form_type1:
         redirect_path = environ.get('SCRIPT_NAME', '')
-        if form_type1:
-            redirect_path += f"/{form_type1}"
+        redirect_path += f"/{form_type1}"
         if form_type2 and form_type2 != form_type1:
             redirect_path += f"/{form_type2}"
-        start_response('302 Found', [('Location', redirect_path or environ.get('SCRIPT_NAME', ''))])
+        start_response('302 Found', [('Location', redirect_path)])
         return [b'']
 
     if not raid_type1 and raid_type2:
@@ -423,12 +423,12 @@ def application(environ, start_response):
         """ + ''.join(raid_cards) + """</div></section>
         """
 
-    form_action = html.escape(environ.get('SCRIPT_NAME', ''))
+    script_name = html.escape(environ.get('SCRIPT_NAME', ''))
 
     body_parts.append(f"""
         <section>
             <h2>Enter Raid Types</h2>
-            <form method="get" action="{form_action}" class="raid-form">
+            <form id="raid_form" class="raid-form" onsubmit="return false;">
                 <label for="raid_type1">
                     Raid Type 1
                     {generate_dropdown('raid_type1', raid_type1)}
@@ -479,6 +479,23 @@ def application(environ, start_response):
             console.error('Copy failed', err);
         }
     });
+
+    const raidForm = document.getElementById('raid_form');
+    if (raidForm) {
+        raidForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const t1 = document.getElementById('raid_type1').value;
+            const t2 = document.getElementById('raid_type2').value;
+            let path = '""" + script_name + """';
+            if (t1) {
+                path += '/' + t1;
+                if (t2 && t2 !== t1) {
+                    path += '/' + t2;
+                }
+            }
+            window.location.href = path || '/';
+        });
+    }
 
     const pokebattlerForm = document.getElementById('pokebattler_form');
     const pokebattlerNameInput = document.getElementById('pokebattler_name');
