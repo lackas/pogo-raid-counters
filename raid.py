@@ -357,6 +357,8 @@ def application(environ, start_response):
         '        .raid-card { padding: 1rem; border: 1px solid #e0e0e0; border-radius: 0.5rem; text-align: center; }',
         '        .raid-card.upcoming { background-color: #f5f5f5; }',
         '        .raid-badge-row { display: flex; justify-content: center; gap: 0.4rem; margin: 0.35rem 0; flex-wrap: wrap; }',
+        '        a.raid-badge-row { gap: 0.15rem; flex-wrap: nowrap; }',
+        '        .raid-card .type-badge { font-size: 0.38rem; padding: 0.08rem 0.34rem; margin: 0; }',
         '        .raid-badge { display: inline-flex; align-items: center; padding: 0.2rem 0.8rem; border-radius: 999px; font-weight: 600; font-size: 0.85rem; text-transform: capitalize; }',
         '        .tier-legendary { background-color: #d4af37; color: #1f1f1f; }',
         '        .tier-shadow { background: linear-gradient(120deg, #2c003e, #5a189a); color: #fff; }',
