@@ -188,6 +188,7 @@ def load_available_raids(path=None):
             "start": start,
             "end": end,
             "status": humanize_schedule(now, start, end),
+            "types": raid.get("types", []),
             "difficulty": diff_text,
             "difficulty_level": diff_value,
             "state": "active" if start and start <= now else "upcoming"
@@ -419,11 +420,21 @@ def application(environ, start_response):
                 if difficulty_text else ""
             )
             badge_row = f"<div class='raid-badge-row'>{tier_badge}{difficulty_badge}</div>"
+            boss_types = raid.get("types", [])
+            if boss_types:
+                type_path = "/".join(boss_types)
+                type_badges = "".join(
+                    f"<span class='type-badge type-{t}'>{t.capitalize()}</span>"
+                    for t in boss_types
+                )
+                type_html = f"<a href='/{type_path}' class='raid-badge-row' style='text-decoration:none;'>{type_badges}</a>"
+            else:
+                type_html = ""
             raid_cards.append(
                 (
                     f"<article class='raid-card {card_class}'>"
                     f"{image_html}{link_start}<strong>{html.escape(raid['pokemon'])}</strong>{link_end}"
-                    f"{badge_row}<p>{raid['status']}</p></article>"
+                    f"{type_html}{badge_row}<p>{raid['status']}</p></article>"
                 )
             )
         raid_section_html = """

@@ -19,6 +19,7 @@ import requests
 
 POKEBATTLER_RAIDS_URL = "https://www.pokebattler.com/raids"
 FIGHT_API_BASE = "https://fight.pokebattler.com"
+POKEAPI_BASE = "https://pokeapi.co/api/v2/pokemon"
 DEFAULT_OUTPUT = "available_raids.json"
 USER_AGENT = "Mozilla/5.0 (compatible; RaidFetcher/1.0; +https://www.pokebattler.com/)"
 
@@ -317,6 +318,44 @@ def fetch_estimator(
         return None
 
 
+def slug_to_pokeapi_name(slug: str) -> str:
+    """Convert a Pokebattler slug to a PokeAPI-compatible name."""
+    name = slug.lower()
+    name = re.sub(r"_shadow_form$", "", name)
+    name = re.sub(r"_form$", "", name)
+    name = re.sub(r"^mega_", "", name)
+    name = re.sub(r"_mega$", "", name)
+    name = re.sub(r"_primal$", "", name)
+    name = name.replace("_", "-")
+    return name
+
+
+def fetch_pokemon_types(slug: str, session: requests.Session) -> List[str]:
+    """Fetch Pokemon types from PokeAPI."""
+    name = slug_to_pokeapi_name(slug)
+    try:
+        resp = session.get(f"{POKEAPI_BASE}/{name}", timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        return [t["type"]["name"] for t in data.get("types", [])]
+    except (requests.RequestException, KeyError, ValueError) as exc:
+        log.warning("Failed to fetch types for %s (as %s): %s", slug, name, exc)
+        return []
+
+
+def populate_types(
+    raids: List[Dict[str, Optional[str]]], session: requests.Session
+) -> None:
+    """Fetch and store Pokemon types for each raid boss."""
+    for raid in raids:
+        slug = raid.get("_slug")
+        if not slug:
+            continue
+        types = fetch_pokemon_types(slug, session)
+        if types:
+            raid["types"] = types
+
+
 def populate_estimators(
     raids: List[Dict[str, Optional[str]]], session: requests.Session
 ) -> None:
@@ -352,6 +391,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         raids = build_raid_entries(data_blob, display_map, args.url)
         populate_missing_images(raids, session, args.url)
         populate_estimators(raids, session)
+        populate_types(raids, session)
     for raid in raids:
         raid.pop("_slug", None)
     output_path = Path(args.output)
