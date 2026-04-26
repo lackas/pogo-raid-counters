@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs
@@ -315,9 +316,94 @@ def difficulty_class(level):
     return "difficulty-extreme"
 
 
+WATCHDOG_INSTANCE_NAME = "pogo-raid-counters"
+WATCHDOG_VERSION = os.environ.get("APP_VERSION", "dev")
+WATCHDOG_MAX_DATA_AGE_SECONDS = 30 * 3600  # cron is daily at 03:00 UTC; 30h gives one retry window
+WATCHDOG_MIN_FREE_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def _run_check(fn):
+    try:
+        return fn()
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def _watchdog_data_path():
+    return os.environ.get("RAID_DATA_PATH") or "/data/available_raids.json"
+
+
+def _check_raid_data():
+    path = _watchdog_data_path()
+    if not os.path.exists(path):
+        return f"ERROR: file missing at {path}"
+    with open(path, "r", encoding="utf-8") as fp:
+        data = json.load(fp)
+    if not isinstance(data, list):
+        return f"ERROR: expected list, got {type(data).__name__}"
+    return f"OK ({len(data)} entries)"
+
+
+def _check_raid_data_age():
+    path = _watchdog_data_path()
+    if not os.path.exists(path):
+        return f"ERROR: file missing at {path}"
+    age = time.time() - os.path.getmtime(path)
+    age_h = int(age // 3600)
+    if age > WATCHDOG_MAX_DATA_AGE_SECONDS:
+        return f"ERROR: {age_h}h old (cron likely failed)"
+    return f"OK ({age_h}h old)"
+
+
+def _check_active_raids():
+    raids = load_available_raids()
+    if not raids:
+        return "WARNING: no tier 5+ raids loaded"
+    return f"OK ({len(raids)} active/upcoming)"
+
+
+def _check_disk_space():
+    path = os.path.dirname(_watchdog_data_path()) or "/"
+    if not os.path.exists(path):
+        path = "/"
+    stat = os.statvfs(path)
+    free = stat.f_frsize * stat.f_bavail
+    if free < WATCHDOG_MIN_FREE_BYTES:
+        return f"ERROR: {free // (1024 * 1024)}MB free at {path}"
+    return f"OK ({free // (1024 * 1024)}MB free)"
+
+
+def watchdog_response(start_response):
+    checks = {
+        "raid_data": _run_check(_check_raid_data),
+        "raid_data_age": _run_check(_check_raid_data_age),
+        "active_raids": _run_check(_check_active_raids),
+        "disk_space": _run_check(_check_disk_space),
+    }
+    overall = "ERROR" if any(v.startswith("ERROR") for v in checks.values()) else "OK"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    body = (
+        f"status: {overall}\n"
+        f"name: {WATCHDOG_INSTANCE_NAME}\n"
+        f"version: {WATCHDOG_VERSION}\n"
+        f"time: {now}\n"
+        + "\n".join(f"{k}: {v}" for k, v in checks.items())
+        + "\n"
+    )
+    encoded = body.encode("utf-8")
+    start_response('200 OK', [
+        ('Content-Type', 'text/plain; charset=utf-8'),
+        ('Content-Length', str(len(encoded))),
+        ('Cache-Control', 'no-store'),
+    ])
+    return [encoded]
+
+
 def application(environ, start_response):
     params = parse_qs(environ.get('QUERY_STRING', ''), keep_blank_values=True)
     path_info = environ.get('PATH_INFO', '').strip('/')
+    if path_info == 'watchdog':
+        return watchdog_response(start_response)
     path_parts = [normalize_type(part) for part in path_info.split('/') if part]
     raid_type1 = path_parts[0] if path_parts else ''
     raid_type2 = path_parts[1] if len(path_parts) > 1 else ''

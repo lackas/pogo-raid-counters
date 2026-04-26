@@ -48,9 +48,28 @@ def test_humanize_tier():
     print("OK: humanize_tier")
 
 
+def test_watchdog():
+    from raid import application
+    captured = {}
+
+    def start_response(status, headers):
+        captured["status"] = status
+        captured["headers"] = dict(headers)
+
+    body = application({"QUERY_STRING": "", "PATH_INFO": "/watchdog", "SCRIPT_NAME": ""}, start_response)
+    assert captured["status"] == "200 OK", f"unexpected status: {captured['status']}"
+    assert captured["headers"].get("Content-Type", "").startswith("text/plain"), \
+        f"unexpected content-type: {captured['headers'].get('Content-Type')}"
+    text = b"".join(body).decode()
+    assert text.startswith("status: "), "missing status line"
+    for key in ("name:", "version:", "time:", "raid_data:", "raid_data_age:", "active_raids:", "disk_space:"):
+        assert key in text, f"missing {key} in watchdog body"
+    print("OK: watchdog endpoint")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_wsgi_app, test_type_effectiveness,
-             test_format_difficulty, test_humanize_tier]
+             test_format_difficulty, test_humanize_tier, test_watchdog]
     failed = 0
     for test in tests:
         try:
