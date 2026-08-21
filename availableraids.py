@@ -138,15 +138,29 @@ def fetch_html(url: str, session: Optional[requests.Session] = None) -> str:
 
 
 def extract_rehydrate_blob(html: str) -> Dict:
+    # Current format (since ~Aug 2026): the payload is a plain JS string literal,
+    #   window.REHYDRATE=JSON.parse("{\"raidsStore\":...}")
+    # Unescape the JS string (json.loads of the quoted literal) to get the JSON
+    # text, then parse that. The char class stops at the first unescaped quote.
+    match = re.search(
+        r'window\.REHYDRATE=JSON\.parse\("((?:[^"\\]|\\.)*)"\)',
+        html,
+        re.DOTALL,
+    )
+    if match:
+        json_text = json.loads('"' + match.group(1) + '"')
+        return json.loads(json_text)
+
+    # Legacy format: window.REHYDRATE=JSON.parse(decodeURIComponent("<url-encoded>"))
     match = re.search(
         r"window\.REHYDRATE=JSON\.parse\(decodeURIComponent\(\"(.*?)\"\)\)",
         html,
         re.DOTALL,
     )
-    if not match:
-        raise RuntimeError("Unable to locate REHYDRATE payload in page")
-    decoded = unquote(match.group(1))
-    return json.loads(decoded)
+    if match:
+        return json.loads(unquote(match.group(1)))
+
+    raise RuntimeError("Unable to locate REHYDRATE payload in page")
 
 
 def extract_display_metadata(html: str) -> Dict[str, Dict[str, Optional[str]]]:
@@ -318,6 +332,19 @@ def fetch_estimator(
         return None
 
 
+# Species whose bare name 404s on PokeAPI because it only exists there under a
+# default *form* name. Verified against pokeapi.co (base name returns 404).
+POKEAPI_NAME_ALIASES = {
+    "giratina": "giratina-altered",
+    "deoxys": "deoxys-normal",
+    "shaymin": "shaymin-land",
+    "tornadus": "tornadus-incarnate",
+    "thundurus": "thundurus-incarnate",
+    "landorus": "landorus-incarnate",
+    "urshifu": "urshifu-single-strike",
+}
+
+
 def slug_to_pokeapi_name(slug: str) -> str:
     """Convert a Pokebattler slug to a PokeAPI-compatible name."""
     name = slug.lower()
@@ -327,7 +354,7 @@ def slug_to_pokeapi_name(slug: str) -> str:
     name = re.sub(r"_mega$", "", name)
     name = re.sub(r"_primal$", "", name)
     name = name.replace("_", "-")
-    return name
+    return POKEAPI_NAME_ALIASES.get(name, name)
 
 
 def fetch_pokemon_types(slug: str, session: requests.Session) -> List[str]:
