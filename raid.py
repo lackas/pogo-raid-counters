@@ -399,11 +399,130 @@ def watchdog_response(start_response):
     return [encoded]
 
 
+def build_effectiveness(raid_type1, raid_type2=None):
+    """Effectiveness payload for one or two boss types (JSON-serializable)."""
+    effective, double, resisting = calculate_effectiveness(raid_type1, raid_type2 or None)
+    types = [raid_type1] + ([raid_type2] if raid_type2 else [])
+    return {
+        "types": types,
+        "effective_attackers": effective,
+        "double_effective_attackers": double,
+        "resisting_attackers": resisting,
+        "search_string": generate_search_string(effective),
+        "double_search_string": generate_search_string(double) if double else "",
+    }
+
+
+def _data_updated_at():
+    path = _watchdog_data_path()
+    if not os.path.exists(path):
+        return None
+    return datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc).isoformat()
+
+
+def build_raids_payload(state_filter=None):
+    """Current tier 5+ raids, each enriched with effective attackers + search string."""
+    items = []
+    for raid in load_available_raids():
+        state = raid.get("state")
+        if state_filter and state != state_filter:
+            continue
+        boss_types = [t for t in (raid.get("types") or []) if t in pokemon_types]
+        eff = None
+        if boss_types:
+            t2 = boss_types[1] if len(boss_types) > 1 else None
+            eff = build_effectiveness(boss_types[0], t2)
+        items.append({
+            "pokemon": raid.get("pokemon"),
+            "tier": raid.get("tier"),
+            "state": state,
+            "status": raid.get("status"),
+            "start": raid["start"].isoformat() if raid.get("start") else None,
+            "end": raid["end"].isoformat() if raid.get("end") else None,
+            "types": raid.get("types", []),
+            "difficulty": raid.get("difficulty") or None,
+            "difficulty_level": raid.get("difficulty_level"),
+            "url": raid.get("url"),
+            "effective_attackers": eff["effective_attackers"] if eff else [],
+            "double_effective_attackers": eff["double_effective_attackers"] if eff else [],
+            "search_string": eff["search_string"] if eff else "",
+        })
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data_updated_at": _data_updated_at(),
+        "count": len(items),
+        "raids": items,
+    }
+
+
+API_HELP = {
+    "endpoints": {
+        "/api/raids": (
+            "Current tier 5+ raids (active + upcoming ~3 days). Each raid includes its "
+            "types, the effective attacker types, and an in-game search string. "
+            "Optional ?state=active or ?state=upcoming."
+        ),
+        "/api/effectiveness/<type>": "Effective attackers against a single boss type.",
+        "/api/effectiveness/<type1>/<type2>": "Effective attackers against a dual-type boss.",
+    },
+    "types": sorted(pokemon_types),
+}
+
+
+def _json_response(start_response, payload, status='200 OK'):
+    encoded = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    start_response(status, [
+        ('Content-Type', 'application/json; charset=utf-8'),
+        ('Content-Length', str(len(encoded))),
+        ('Cache-Control', 'no-store'),
+        ('Access-Control-Allow-Origin', '*'),
+    ])
+    return [encoded]
+
+
+def api_response(start_response, path_parts, params):
+    """Read-only JSON API. `path_parts` excludes the leading 'api' segment."""
+    if not path_parts:
+        return _json_response(start_response, API_HELP)
+    section = path_parts[0]
+    if section == 'raids':
+        state = (params.get('state', [''])[0] or '').strip().lower() or None
+        if state and state not in {'active', 'upcoming'}:
+            return _json_response(
+                start_response,
+                {"error": "state must be 'active' or 'upcoming'"},
+                '400 Bad Request',
+            )
+        return _json_response(start_response, build_raids_payload(state))
+    if section == 'effectiveness':
+        req_types = [t for t in (normalize_type(p) for p in path_parts[1:3]) if t]
+        if not req_types:
+            return _json_response(
+                start_response,
+                {
+                    "error": "provide one or two raid types, e.g. /api/effectiveness/ghost/dragon",
+                    "types": sorted(pokemon_types),
+                },
+                '400 Bad Request',
+            )
+        t1 = req_types[0]
+        t2 = req_types[1] if len(req_types) > 1 and req_types[1] != t1 else None
+        return _json_response(start_response, build_effectiveness(t1, t2))
+    return _json_response(
+        start_response,
+        {"error": f"unknown endpoint '/api/{section}'", **API_HELP},
+        '404 Not Found',
+    )
+
+
 def application(environ, start_response):
     params = parse_qs(environ.get('QUERY_STRING', ''), keep_blank_values=True)
     path_info = environ.get('PATH_INFO', '').strip('/')
     if path_info == 'watchdog':
         return watchdog_response(start_response)
+    if path_info == 'api' or path_info.startswith('api/'):
+        api_parts = [p for p in path_info.split('/') if p][1:]
+        return api_response(start_response, api_parts, params)
     path_parts = [normalize_type(part) for part in path_info.split('/') if part]
     raid_type1 = path_parts[0] if path_parts else ''
     raid_type2 = path_parts[1] if len(path_parts) > 1 else ''

@@ -48,6 +48,58 @@ def test_humanize_tier():
     print("OK: humanize_tier")
 
 
+def _call(path, query=""):
+    from raid import application
+    captured = {}
+
+    def start_response(status, headers):
+        captured["status"] = status
+        captured["headers"] = dict(headers)
+
+    body = application(
+        {"QUERY_STRING": query, "PATH_INFO": path, "SCRIPT_NAME": ""}, start_response
+    )
+    captured["body"] = b"".join(body)
+    return captured
+
+
+def test_api_effectiveness():
+    import json
+
+    resp = _call("/api/effectiveness/ghost/dragon")
+    assert resp["status"] == "200 OK", f"unexpected status: {resp['status']}"
+    assert resp["headers"].get("Content-Type", "").startswith("application/json")
+    data = json.loads(resp["body"])
+    assert data["types"] == ["ghost", "dragon"]
+    assert "ice" in data["effective_attackers"], "ice should hit dragon"
+    assert "dragon" in data["effective_attackers"]
+    assert data["search_string"], "expected a non-empty search string"
+
+    # Unknown type → 400 with the list of valid types.
+    bad = _call("/api/effectiveness/notatype")
+    assert bad["status"] == "400 Bad Request", f"unexpected status: {bad['status']}"
+    assert "types" in json.loads(bad["body"])
+    print("OK: api effectiveness")
+
+
+def test_api_raids():
+    import json
+
+    resp = _call("/api/raids")
+    assert resp["status"] == "200 OK", f"unexpected status: {resp['status']}"
+    assert resp["headers"].get("Content-Type", "").startswith("application/json")
+    data = json.loads(resp["body"])
+    for key in ("generated_at", "data_updated_at", "count", "raids"):
+        assert key in data, f"missing {key} in raids payload"
+    assert isinstance(data["raids"], list)
+    assert data["count"] == len(data["raids"])
+
+    # Bad state filter is rejected.
+    bad = _call("/api/raids", query="state=bogus")
+    assert bad["status"] == "400 Bad Request", f"unexpected status: {bad['status']}"
+    print("OK: api raids")
+
+
 def test_watchdog():
     from raid import application
     captured = {}
@@ -69,7 +121,8 @@ def test_watchdog():
 
 if __name__ == "__main__":
     tests = [test_imports, test_wsgi_app, test_type_effectiveness,
-             test_format_difficulty, test_humanize_tier, test_watchdog]
+             test_format_difficulty, test_humanize_tier,
+             test_api_effectiveness, test_api_raids, test_watchdog]
     failed = 0
     for test in tests:
         try:

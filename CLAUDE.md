@@ -15,6 +15,16 @@ Pokemon Go raid counter helper web app. Calculates type effectiveness against ra
 
 Clean URL paths: `/<type1>` or `/<type1>/<type2>` (e.g., `/water/ghost`). Form submissions redirect to clean URLs via 302.
 
+## JSON API (`/api/...`)
+
+Read-only JSON, no auth (all data is public game data — a token would be friction with no security value, unlike the watchdog which exposes private infra state).
+
+- `GET /api` — endpoint discovery + valid type names
+- `GET /api/raids[?state=active|upcoming]` — current tier 5+ raids, each enriched with `types`, `effective_attackers`, `double_effective_attackers`, and a ready-to-paste `search_string`
+- `GET /api/effectiveness/<type1>[/<type2>]` — counters for an arbitrary type combo
+
+Implemented in `raid.py`: `build_raids_payload()`, `build_effectiveness()`, `api_response()` (routed from `application()` before the type-path handling). Covered by `smoke_test.py::test_api_raids` / `test_api_effectiveness`.
+
 ## Infrastructure
 
 - Docker with gunicorn (2 workers, port 8000)

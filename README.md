@@ -35,6 +35,46 @@ python availableraids.py --output available_raids.json
 export RAID_DATA_PATH=./available_raids.json
 ```
 
+## JSON API
+
+Read-only JSON endpoints for scripts and agents. Same public data as the HTML
+UI, no authentication (the whole site is public).
+
+```
+GET /api                                  # endpoint discovery + valid type names
+GET /api/raids                            # current tier 5+ raids, each with counters
+GET /api/raids?state=active               # only active (or ?state=upcoming)
+GET /api/effectiveness/<type>             # counters vs a single boss type
+GET /api/effectiveness/<type1>/<type2>    # counters vs a dual-type boss
+```
+
+```bash
+curl -s https://raid.lackas.net/api/raids | jq '.raids[] | {pokemon, types, effective_attackers}'
+curl -s https://raid.lackas.net/api/effectiveness/ghost/dragon
+```
+
+`/api/raids` returns each raid with its `types`, the `effective_attackers` and
+`double_effective_attackers` types, a ready-to-paste in-game `search_string`,
+plus `difficulty`, `state` (`active`/`upcoming`) and `status`. `data_updated_at`
+is the age of the underlying scrape (refreshed daily at 3 AM UTC).
+
+```json
+{
+  "generated_at": "2026-08-21T18:41:05+00:00",
+  "data_updated_at": "2026-08-21T03:00:12+00:00",
+  "count": 2,
+  "raids": [
+    {"pokemon": "Giratina", "tier": "Tier 5", "state": "active",
+     "status": "9 more days", "types": ["ghost", "dragon"],
+     "difficulty": "3+ trainers", "difficulty_level": 3,
+     "url": "https://www.pokebattler.com/raids/GIRATINA_ALTERED_FORM",
+     "effective_attackers": ["ice", "ghost", "dragon", "dark", "fairy"],
+     "double_effective_attackers": [],
+     "search_string": "@1ice,@1ghost,...&@2ice,@3ice,..."}
+  ]
+}
+```
+
 ## Environment Variables
 
 | Variable | Default | Description |
