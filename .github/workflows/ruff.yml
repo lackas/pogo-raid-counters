@@ -11,4 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pin the ruff version: an unpinned action silently upgrades ruff and its
+      # default rule set widened over time, which is what turned CI red. Bump
+      # deliberately alongside ruff.toml.
       - uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.16.4"

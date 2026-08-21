@@ -6,10 +6,10 @@ import math
 import os
 import re
 import time
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import UTC, datetime
 from urllib.parse import parse_qs
 from wsgiref.handlers import CGIHandler
+from zoneinfo import ZoneInfo
 
 # List of all Pokémon Go types
 pokemon_types = [
@@ -155,7 +155,7 @@ def load_available_raids(path=None):
             data = json.load(fp)
     except (OSError, json.JSONDecodeError):
         return []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # Timestamps from the source site appear to use California time; default to that unless overridden.
     source_tz_name = os.environ.get("RAID_SOURCE_TZ", "America/Los_Angeles")
     try:
@@ -174,9 +174,9 @@ def load_available_raids(path=None):
         start_local = parse_local_timestamp(raid.get("start_local"), local_tz)
         end_local = parse_local_timestamp(raid.get("end_local"), local_tz)
         if start_local:
-            start = start_local.astimezone(timezone.utc)
+            start = start_local.astimezone(UTC)
         if end_local:
-            end = end_local.astimezone(timezone.utc)
+            end = end_local.astimezone(UTC)
         diff_text, diff_value = format_difficulty_label(raid.get("difficulty"))
         if end and end < now:
             continue
@@ -195,8 +195,8 @@ def load_available_raids(path=None):
             "state": "active" if start and start <= now else "upcoming"
         }
         (active if entry["state"] == "active" else upcoming).append(entry)
-    active.sort(key=lambda item: item.get("end") or datetime.max.replace(tzinfo=timezone.utc))
-    upcoming.sort(key=lambda item: item.get("start") or datetime.max.replace(tzinfo=timezone.utc))
+    active.sort(key=lambda item: item.get("end") or datetime.max.replace(tzinfo=UTC))
+    upcoming.sort(key=lambda item: item.get("start") or datetime.max.replace(tzinfo=UTC))
     return active + upcoming
 
 
@@ -381,7 +381,7 @@ def watchdog_response(start_response):
         "disk_space": _run_check(_check_disk_space),
     }
     overall = "ERROR" if any(v.startswith("ERROR") for v in checks.values()) else "OK"
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     body = (
         f"status: {overall}\n"
         f"name: {WATCHDOG_INSTANCE_NAME}\n"
@@ -417,7 +417,7 @@ def _data_updated_at():
     path = _watchdog_data_path()
     if not os.path.exists(path):
         return None
-    return datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(os.path.getmtime(path), tz=UTC).isoformat()
 
 
 def build_raids_payload(state_filter=None):
@@ -448,7 +448,7 @@ def build_raids_payload(state_filter=None):
             "search_string": eff["search_string"] if eff else "",
         })
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "data_updated_at": _data_updated_at(),
         "count": len(items),
         "raids": items,
@@ -638,11 +638,11 @@ def application(environ, start_response):
             else:
                 type_html = ""
             raid_cards.append(
-                (
+                
                     f"<article class='raid-card {card_class}'>"
                     f"{image_html}{link_start}<strong>{html.escape(raid['pokemon'])}</strong>{link_end}"
                     f"{type_html}{badge_row}<p>{raid['status']}</p></article>"
-                )
+                
             )
         raid_section_html = """
         <section>

@@ -1,0 +1,13 @@
+# Pinned so CI stays reproducible: the workflow also pins the ruff version, and
+# this file freezes the rule set. Without it, `ruff check` with no config drifts
+# as new ruff releases widen the default rule selection.
+target-version = "py311"
+
+[lint]
+# Keep ruff's (broad) default selection — the pyupgrade/isort/simplify checks are
+# useful — but silence three rules that flag deliberate patterns in this codebase:
+ignore = [
+    "BLE001",  # blind `except Exception` — intentional: the scraper must stay up on any single-boss failure
+    "DTZ007",  # naive strptime — intentional: we attach tzinfo on the very next line (parse_local_timestamp)
+    "RUF059",  # unused unpack — kept for readability (e.g. `effective, double, resisting = ...`)
+]

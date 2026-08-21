@@ -5,8 +5,8 @@ import sys
 
 
 def test_imports():
-    import raid  # noqa: F401
     import availableraids  # noqa: F401
+    import raid  # noqa: F401
     print("OK: imports")
 
 

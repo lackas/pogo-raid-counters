@@ -9,10 +9,9 @@ import json
 import logging
 import math
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Dict, List, Optional
 from urllib.parse import unquote, urljoin
 
 import requests
@@ -29,10 +28,10 @@ class RaidLinkParser(HTMLParser):
 
     def __init__(self) -> None:
         super().__init__()
-        self._current_row: Optional[Dict[str, object]] = None
+        self._current_row: dict[str, object] | None = None
         self._inside_anchor = False
         self._capture_difficulty = False
-        self.results: Dict[str, Dict[str, Optional[str]]] = {}
+        self.results: dict[str, dict[str, str | None]] = {}
 
     def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
         attrs_dict = {name.lower(): value for name, value in attrs}
@@ -130,14 +129,14 @@ def create_session() -> requests.Session:
     return session
 
 
-def fetch_html(url: str, session: Optional[requests.Session] = None) -> str:
+def fetch_html(url: str, session: requests.Session | None = None) -> str:
     requester = session or requests
     response = requester.get(url, timeout=20)
     response.raise_for_status()
     return response.text
 
 
-def extract_rehydrate_blob(html: str) -> Dict:
+def extract_rehydrate_blob(html: str) -> dict:
     # Current format (since ~Aug 2026): the payload is a plain JS string literal,
     #   window.REHYDRATE=JSON.parse("{\"raidsStore\":...}")
     # Unescape the JS string (json.loads of the quoted literal) to get the JSON
@@ -163,7 +162,7 @@ def extract_rehydrate_blob(html: str) -> Dict:
     raise RuntimeError("Unable to locate REHYDRATE payload in page")
 
 
-def extract_display_metadata(html: str) -> Dict[str, Dict[str, Optional[str]]]:
+def extract_display_metadata(html: str) -> dict[str, dict[str, str | None]]:
     parser = RaidLinkParser()
     parser.feed(html)
     return parser.results
@@ -190,20 +189,20 @@ def humanize_tier(tier: str) -> str:
     return tier.replace("_", " ").title() if tier else "Unknown"
 
 
-def format_timestamp(ms: Optional[int], fallback: Optional[str]) -> Optional[str]:
+def format_timestamp(ms: int | None, fallback: str | None) -> str | None:
     if ms:
-        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(ms / 1000, tz=UTC).isoformat()
     return fallback
 
 
 def build_raid_entries(
-    data_blob: Dict,
-    display_map: Dict[str, Dict[str, Optional[str]]],
+    data_blob: dict,
+    display_map: dict[str, dict[str, str | None]],
     base_url: str,
-) -> List[Dict[str, Optional[str]]]:
-    raids: List[Dict[str, Optional[str]]] = []
+) -> list[dict[str, str | None]]:
+    raids: list[dict[str, str | None]] = []
     raids_store = data_blob.get("raidsStore", {})
-    now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    now_ms = datetime.now(UTC).timestamp() * 1000
     upcoming_cutoff = now_ms + 3 * 24 * 60 * 60 * 1000
     seen_keys = set()
     for tier_info in raids_store.values():
@@ -218,9 +217,8 @@ def build_raid_entries(
                 continue
             if start_ms > upcoming_cutoff:
                 continue
-            if start_ms <= now_ms:
-                if end_ms is not None and end_ms < now_ms:
-                    continue
+            if start_ms <= now_ms and end_ms is not None and end_ms < now_ms:
+                continue
 
             display = display_map.get(slug, {})
             if not display:
@@ -253,7 +251,7 @@ asset_pattern = re.compile(r'(?:https?:)?//static\.pokebattler\.com/assets/pokem
 boss_icon_pattern = re.compile(r'(?:https?:)?//static\.pokebattler\.com/assets/pokemon/256/[^"\'<>\s]+', re.IGNORECASE)
 
 
-def _extract_icon_url(html: str, display_name: Optional[str]) -> Optional[str]:
+def _extract_icon_url(html: str, display_name: str | None) -> str | None:
     boss_match = boss_icon_pattern.search(html)
     if boss_match:
         url = boss_match.group(0)
@@ -273,11 +271,11 @@ def _extract_icon_url(html: str, display_name: Optional[str]) -> Optional[str]:
 
 
 def populate_missing_images(
-    raids: List[Dict[str, Optional[str]]],
+    raids: list[dict[str, str | None]],
     session: requests.Session,
     base_url: str,
 ) -> None:
-    cache: Dict[str, Optional[str]] = {}
+    cache: dict[str, str | None] = {}
     image_pattern = re.compile(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', re.IGNORECASE)
     for raid in raids:
         if raid.get("image"):
@@ -312,7 +310,7 @@ log = logging.getLogger(__name__)
 
 def fetch_estimator(
     slug: str, tier_raw: str, session: requests.Session
-) -> Optional[float]:
+) -> float | None:
     """Fetch the best-case Pokebattler Estimator for a raid boss."""
     url = (
         f"{FIGHT_API_BASE}/raids/defenders/{slug}/levels/{tier_raw}"
@@ -357,7 +355,7 @@ def slug_to_pokeapi_name(slug: str) -> str:
     return POKEAPI_NAME_ALIASES.get(name, name)
 
 
-def fetch_pokemon_types(slug: str, session: requests.Session) -> List[str]:
+def fetch_pokemon_types(slug: str, session: requests.Session) -> list[str]:
     """Fetch Pokemon types from PokeAPI."""
     name = slug_to_pokeapi_name(slug)
     try:
@@ -371,7 +369,7 @@ def fetch_pokemon_types(slug: str, session: requests.Session) -> List[str]:
 
 
 def populate_types(
-    raids: List[Dict[str, Optional[str]]], session: requests.Session
+    raids: list[dict[str, str | None]], session: requests.Session
 ) -> None:
     """Fetch and store Pokemon types for each raid boss."""
     for raid in raids:
@@ -384,7 +382,7 @@ def populate_types(
 
 
 def populate_estimators(
-    raids: List[Dict[str, Optional[str]]], session: requests.Session
+    raids: list[dict[str, str | None]], session: requests.Session
 ) -> None:
     """Replace HTML-scraped difficulty with the fight-API estimator."""
     for raid in raids:
@@ -398,18 +396,18 @@ def populate_estimators(
             raid["difficulty_raw"] = estimator
 
 
-def write_output(path: Path, payload: List[Dict[str, Optional[str]]]) -> None:
+def write_output(path: Path, payload: list[dict[str, str | None]]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=POKEBATTLER_RAIDS_URL, help="Source page to scrape")
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Path to write the JSON payload")
     return parser.parse_args(argv)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     with create_session() as session:
         html = fetch_html(args.url, session=session)
