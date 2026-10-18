@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 
-"""Fetch current Pokebattler raid data and cache it locally as JSON."""
+"""Fetch current Pokebattler raid data and cache it locally as JSON.
+
+Data comes from the two JSON endpoints Pokebattler's own frontend uses:
+
+* ``/raids``   — which bosses are in rotation per tier, plus ``breakingNews``,
+  which carries the schedule window (start/end) for each boss.
+* ``/pokemon`` — the pokedex, which carries the boss types.
+
+This replaced HTML scraping in October 2026, when pokebattler.com became a
+client-side SPA: the server now ships a 7 KB shell, so the ``window.REHYDRATE``
+blob the old scraper parsed is gone for good, as are the per-boss detail pages
+it fetched icons from. The JSON endpoints are the SPA's own data source and
+need no rendering, which makes them both simpler and far less brittle.
+"""
 
 from __future__ import annotations
 
@@ -8,119 +21,32 @@ import argparse
 import json
 import logging
 import math
+import os
 import re
 from datetime import UTC, datetime
-from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote, urljoin
+from zoneinfo import ZoneInfo
 
 import requests
 
-POKEBATTLER_RAIDS_URL = "https://www.pokebattler.com/raids"
+POKEBATTLER_SITE = "https://www.pokebattler.com"
 FIGHT_API_BASE = "https://fight.pokebattler.com"
-POKEAPI_BASE = "https://pokeapi.co/api/v2/pokemon"
+RAIDS_API_URL = f"{FIGHT_API_BASE}/raids"
+POKEDEX_API_URL = f"{FIGHT_API_BASE}/pokemon"
+ICON_BASE_URL = "https://static.pokebattler.com/assets/pokemon/64"
 DEFAULT_OUTPUT = "available_raids.json"
 USER_AGENT = "Mozilla/5.0 (compatible; RaidFetcher/1.0; +https://www.pokebattler.com/)"
 
+# Pokebattler stores raid windows as wall-clock times in California and the
+# frontend reinterprets them in the viewer's own timezone ("6 AM local"). We
+# render them in the source timezone and hand raid.py the matching instant;
+# raid.py reads start_local back with the same RAID_SOURCE_TZ default.
+SOURCE_TZ_NAME = os.environ.get("RAID_SOURCE_TZ", "America/Los_Angeles")
 
-class RaidLinkParser(HTMLParser):
-    """Collect raid display names, images, and difficulty hints from the HTML."""
+# How far ahead an announced raid may start and still be written out.
+UPCOMING_WINDOW_SECONDS = 3 * 24 * 60 * 60
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._current_row: dict[str, object] | None = None
-        self._inside_anchor = False
-        self._capture_difficulty = False
-        self.results: dict[str, dict[str, str | None]] = {}
-
-    def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
-        attrs_dict = {name.lower(): value for name, value in attrs}
-        if tag == "tr":
-            self._current_row = {
-                "slug": None,
-                "title": None,
-                "text": [],
-                "image": None,
-                "_image_priority": -1,
-                "difficulty": None,
-            }
-        elif self._current_row is not None:
-            if tag == "a":
-                href = attrs_dict.get("href", "")
-                if href.startswith("/raids/"):
-                    slug_path = href.split("/raids/")[1].split("?")[0]
-                    if slug_path.startswith("defenders/"):
-                        slug_path = slug_path.split("/")[-1]
-                    slug = slug_path.split("/")[-1]
-                    self._current_row["slug"] = slug
-                    self._current_row["title"] = attrs_dict.get("title")
-                    self._inside_anchor = True
-            elif tag in {"img", "image"}:
-                src = (
-                    attrs_dict.get("xlink:href")
-                    or attrs_dict.get("href")
-                    or attrs_dict.get("src")
-                )
-                if src and "assets/pokemon" in src:
-                    priority = 2 if "pokemon_icon" in src else 1
-                    if src.startswith("//"):
-                        src = f"https:{src}"
-                    if priority > self._current_row.get("_image_priority", -1):
-                        self._current_row["image"] = src
-                        self._current_row["_image_priority"] = priority
-            elif tag == "span" and self._current_row.get("difficulty") is None:
-                class_attr = attrs_dict.get("class", "")
-                if "easyDifficulty" in class_attr or "veryEasyDifficulty" in class_attr:
-                    self._capture_difficulty = True
-
-    def handle_data(self, data: str) -> None:  # type: ignore[override]
-        if not self._current_row:
-            return
-        stripped = data.strip()
-        if not stripped:
-            return
-        if self._capture_difficulty and self._current_row.get("difficulty") is None:
-            self._current_row["difficulty"] = stripped
-            self._capture_difficulty = False
-            return
-        if self._inside_anchor:
-            text_list = self._current_row.setdefault("text", [])
-            if isinstance(text_list, list):
-                text_list.append(stripped)
-
-    def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
-        if tag == "a" and self._inside_anchor:
-            self._inside_anchor = False
-        elif tag == "span" and self._capture_difficulty:
-            self._capture_difficulty = False
-        elif tag == "tr" and self._current_row is not None:
-            slug = self._current_row.get("slug")
-            if slug:
-                text_bits = self._current_row.get("text") or []
-                if isinstance(text_bits, list):
-                    name = " ".join(text_bits).strip()
-                else:
-                    name = ""
-                title = (self._current_row.get("title") or "")
-                if not name and title.endswith("Counters"):
-                    name = title[: -len("Counters")].strip()
-                if not name:
-                    name = slug.replace("_", " ").title()
-                existing = self.results.get(slug)
-                if existing:
-                    if not existing.get("image") and self._current_row.get("image"):
-                        existing["image"] = self._current_row["image"]
-                    if not existing.get("difficulty") and self._current_row.get("difficulty"):
-                        existing["difficulty"] = self._current_row["difficulty"]
-                else:
-                    self.results[slug] = {
-                        "name": name,
-                        "image": self._current_row.get("image"),
-                        "difficulty": self._current_row.get("difficulty"),
-                    }
-            self._current_row = None
-            self._inside_anchor = False
-            self._capture_difficulty = False
+log = logging.getLogger(__name__)
 
 
 def create_session() -> requests.Session:
@@ -129,43 +55,63 @@ def create_session() -> requests.Session:
     return session
 
 
-def fetch_html(url: str, session: requests.Session | None = None) -> str:
-    requester = session or requests
-    response = requester.get(url, timeout=20)
+def fetch_json(url: str, session: requests.Session, timeout: int = 60) -> dict:
+    response = session.get(url, timeout=timeout)
     response.raise_for_status()
-    return response.text
+    return response.json()
 
 
-def extract_rehydrate_blob(html: str) -> dict:
-    # Current format (since ~Aug 2026): the payload is a plain JS string literal,
-    #   window.REHYDRATE=JSON.parse("{\"raidsStore\":...}")
-    # Unescape the JS string (json.loads of the quoted literal) to get the JSON
-    # text, then parse that. The char class stops at the first unescaped quote.
-    match = re.search(
-        r'window\.REHYDRATE=JSON\.parse\("((?:[^"\\]|\\.)*)"\)',
-        html,
-        re.DOTALL,
-    )
-    if match:
-        json_text = json.loads('"' + match.group(1) + '"')
-        return json.loads(json_text)
-
-    # Legacy format: window.REHYDRATE=JSON.parse(decodeURIComponent("<url-encoded>"))
-    match = re.search(
-        r"window\.REHYDRATE=JSON\.parse\(decodeURIComponent\(\"(.*?)\"\)\)",
-        html,
-        re.DOTALL,
-    )
-    if match:
-        return json.loads(unquote(match.group(1)))
-
-    raise RuntimeError("Unable to locate REHYDRATE payload in page")
+def source_tz() -> ZoneInfo:
+    try:
+        return ZoneInfo(SOURCE_TZ_NAME)
+    except Exception:
+        # A bad env value must not kill the run.
+        log.warning("Unknown RAID_SOURCE_TZ %r, falling back to UTC", SOURCE_TZ_NAME)
+        return ZoneInfo("UTC")
 
 
-def extract_display_metadata(html: str) -> dict[str, dict[str, str | None]]:
-    parser = RaidLinkParser()
-    parser.feed(html)
-    return parser.results
+def is_current_tier(tier: str) -> bool:
+    """True for tiers that describe the live rotation.
+
+    ``_FUTURE`` and ``_LEGACY`` are catalogues of everything that ever ran or
+    might run (several hundred entries), and ``RAID_LEVEL_UNSET`` holds the
+    whole pokedex. ``_MAX`` is excluded too: Max Battles are a separate game
+    mode, and is_tier_five_or_higher() in raid.py would render them as raid
+    cards.
+    """
+    if not tier or tier == "RAID_LEVEL_UNSET":
+        return False
+    if tier.endswith(("_FUTURE", "_LEGACY")):
+        return False
+    return "_MAX" not in tier
+
+
+# Name rewrites ported from Pokebattler's own bundle so our labels match the
+# site's ("Shadow Landorus", "Mega Dragonite", "Arcanine (Hisuian)").
+NAME_REWRITES = (
+    (r"^MEWTWO_A_FORM$", "Armored Mewtwo"),
+    (r"_SHADOW_FORM$", " (Shadow)"),
+    (r"_GIGANTAMAX$", " (Gigantamax)"),
+    (r"_DYNAMAX$", " (Dynamax)"),
+    (r"^(.*)_MEGA_Y$", r"Mega \1 Y"),
+    (r"^(.*)_MEGA_X$", r"Mega \1 X"),
+    (r"^(.*)_MEGA$", r"Mega \1"),
+    (r"_PRIMAL$", " (Primal)"),
+    (r"_ALOLAN?_FORM$", " (Alolan)"),
+    (r"_GALARIAN?_FORM$", " (Galarian)"),
+    (r"_HISUIAN_FORM$", " (Hisuian)"),
+)
+
+
+def display_name(pokemon_id: str) -> str:
+    name = pokemon_id or ""
+    for pattern, replacement in NAME_REWRITES:
+        name = re.sub(pattern, replacement, name)
+    name = name.replace("_", " ").lower()
+    name = re.sub(r"\b\w", lambda match: match.group(0).upper(), name)
+    # The site moves the shadow marker to the front rather than keeping it in
+    # parentheses, which is also how the old HTML scraper read it.
+    return re.sub(r"^(.*) \(Shadow\)$", r"Shadow \1", name)
 
 
 def humanize_tier(tier: str) -> str:
@@ -189,128 +135,160 @@ def humanize_tier(tier: str) -> str:
     return tier.replace("_", " ").title() if tier else "Unknown"
 
 
-def format_timestamp(ms: int | None, fallback: str | None) -> str | None:
-    if ms:
-        return datetime.fromtimestamp(ms / 1000, tz=UTC).isoformat()
-    return fallback
+def format_local(ms: int | None, tz: ZoneInfo) -> str | None:
+    """Render an epoch-ms timestamp the way the site does: 'Oct 14, 2026 6:00 AM'."""
+    if not ms:
+        return None
+    moment = datetime.fromtimestamp(ms / 1000, tz)
+    hour = moment.hour % 12 or 12
+    meridiem = "AM" if moment.hour < 12 else "PM"
+    return f"{moment:%b} {moment.day}, {moment.year} {hour}:{moment:%M} {meridiem}"
 
 
-def build_raid_entries(
-    data_blob: dict,
-    display_map: dict[str, dict[str, str | None]],
-    base_url: str,
-) -> list[dict[str, str | None]]:
-    raids: list[dict[str, str | None]] = []
-    raids_store = data_blob.get("raidsStore", {})
+def format_utc(ms: int | None) -> str | None:
+    if not ms:
+        return None
+    return datetime.fromtimestamp(ms / 1000, tz=UTC).isoformat()
+
+
+def build_schedule(blob: dict) -> dict[tuple[str, str], dict]:
+    """Map (pokemonId, tier) to its schedule entry from ``breakingNews``."""
+    schedule: dict[tuple[str, str], dict] = {}
+    for entry in blob.get("breakingNews") or []:
+        pokemon = entry.get("pokemon")
+        tier = entry.get("tier")
+        if pokemon and tier:
+            schedule[(pokemon, tier)] = entry
+    return schedule
+
+
+def build_raid_entries(blob: dict, icon_map: dict[str, str]) -> list[dict]:
+    schedule = build_schedule(blob)
+    tz = source_tz()
     now_ms = datetime.now(UTC).timestamp() * 1000
-    upcoming_cutoff = now_ms + 3 * 24 * 60 * 60 * 1000
-    seen_keys = set()
-    for tier_info in raids_store.values():
-        for raid in tier_info.get("raids", []):
-            slug = raid.get("pokemonId") or raid.get("pokemon")
-            if not slug:
+    cutoff_ms = now_ms + UPCOMING_WINDOW_SECONDS * 1000
+    raids: list[dict] = []
+    seen: set[str] = set()
+
+    for tier_info in blob.get("tiers") or []:
+        tier_raw = tier_info.get("tier") or ""
+        if not is_current_tier(tier_raw):
+            continue
+        for boss in tier_info.get("raids") or []:
+            slug = boss.get("pokemonId") or boss.get("pokemon")
+            if not slug or slug in seen:
                 continue
 
-            start_ms = raid.get("startDate")
-            end_ms = raid.get("endDate")
-            if start_ms is None:
+            window = schedule.get((slug, tier_raw), {})
+            start_ms = window.get("startDate") or boss.get("startDate")
+            end_ms = window.get("endDate")
+            if not start_ms:
                 continue
-            if start_ms > upcoming_cutoff:
+            if start_ms > cutoff_ms:
                 continue
-            if start_ms <= now_ms and end_ms is not None and end_ms < now_ms:
+            if end_ms and end_ms < now_ms:
                 continue
 
-            display = display_map.get(slug, {})
-            if not display:
-                continue
-            dedupe_key = slug
-            if dedupe_key in seen_keys:
-                continue
-            seen_keys.add(dedupe_key)
-            entry = {
-                "pokemon": display.get("name")
-                or raid.get("pokemon")
-                or slug.replace("_", " ").title(),
-                "image": display.get("image"),
-                "start_local": raid.get("localStartDate"),
-                "end_local": raid.get("localEndDate"),
-                "start_utc": format_timestamp(raid.get("startDate"), None),
-                "end_utc": format_timestamp(raid.get("endDate"), None),
-                "difficulty": display.get("difficulty"),
-                "tier": humanize_tier(raid.get("tier", "")),
-                "tier_raw": raid.get("tier"),
-                "pokebattler_url": urljoin(base_url, f"/raids/{slug}"),
-                "_slug": slug,
-            }
-            raids.append(entry)
+            seen.add(slug)
+            raids.append(
+                {
+                    "pokemon": display_name(slug),
+                    "image": icon_url(slug, icon_map),
+                    "start_local": format_local(start_ms, tz),
+                    "end_local": format_local(end_ms, tz),
+                    "start_utc": format_utc(start_ms),
+                    "end_utc": format_utc(end_ms),
+                    "difficulty": None,
+                    "tier": humanize_tier(tier_raw),
+                    "tier_raw": tier_raw,
+                    "pokebattler_url": f"{POKEBATTLER_SITE}/raids/{slug}",
+                    "_slug": slug,
+                }
+            )
+
     raids.sort(key=lambda item: (item.get("start_utc") or "", item.get("pokemon") or ""))
     return raids
 
 
-asset_pattern = re.compile(r'(?:https?:)?//static\.pokebattler\.com/assets/pokemon/[^"\'<>\s]+', re.IGNORECASE)
-boss_icon_pattern = re.compile(r'(?:https?:)?//static\.pokebattler\.com/assets/pokemon/256/[^"\'<>\s]+', re.IGNORECASE)
+# Values in the icon table are game assets ("pokemon_icon_483_00.png" or
+# "pm/pm149.fMEGA.icon.png"); the same chunk also holds an alternative art set
+# whose values are bare "DIALGA.png" names, which this pattern skips.
+ICON_ENTRY_RE = re.compile(
+    r"([A-Z][A-Z0-9_]*):`((?:pokemon_icon_[0-9a-z_]+|pm/pm[0-9A-Za-z._]+)\.png)`"
+)
 
 
-def _extract_icon_url(html: str, display_name: str | None) -> str | None:
-    boss_match = boss_icon_pattern.search(html)
-    if boss_match:
-        url = boss_match.group(0)
-        return f"https:{url}" if url.startswith("//") else url
-    if display_name:
-        escaped = re.escape(display_name)
-        svg_pattern = re.compile(
-            rf'<svg[^>]+aria-label="{escaped}".*?</svg>', re.IGNORECASE | re.DOTALL
-        )
-        svg_match = svg_pattern.search(html)
-        if svg_match:
-            asset_match = asset_pattern.search(svg_match.group(0))
-            if asset_match:
-                url = asset_match.group(0)
-                return f"https:{url}" if url.startswith("//") else url
-    return None
+def fetch_icon_map(session: requests.Session) -> dict[str, str]:
+    """Best effort: Pokebattler's own pokemonId -> icon filename table.
+
+    The table lives in a hash-named JS chunk, so it is discovered through the
+    page and the entry bundle rather than hardcoded. Icons are decoration, so
+    every failure here is a warning and an empty map, never a failed run.
+    """
+    try:
+        html = session.get(f"{POKEBATTLER_SITE}/raids", timeout=20).text
+        entry_match = re.search(r'src="(/assets/index-[^"]+\.js)"', html)
+        if not entry_match:
+            raise RuntimeError("entry bundle not referenced in page")
+        bundle = session.get(f"{POKEBATTLER_SITE}{entry_match.group(1)}", timeout=30).text
+        chunk_match = re.search(r"assets/(pokebattler-[A-Za-z0-9_-]+\.js)", bundle)
+        if not chunk_match:
+            raise RuntimeError("icon chunk not referenced in bundle")
+        chunk = session.get(f"{POKEBATTLER_SITE}/assets/{chunk_match.group(1)}", timeout=30).text
+        icon_map = dict(ICON_ENTRY_RE.findall(chunk))
+        if not icon_map:
+            raise RuntimeError("icon table not found in chunk")
+        log.info("Icon table: %d entries", len(icon_map))
+        return icon_map
+    except (requests.RequestException, RuntimeError) as exc:
+        log.warning("No boss icons this run: %s", exc)
+        return {}
 
 
-def populate_missing_images(
-    raids: list[dict[str, str | None]],
-    session: requests.Session,
-    base_url: str,
-) -> None:
-    cache: dict[str, str | None] = {}
-    image_pattern = re.compile(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', re.IGNORECASE)
+def icon_url(slug: str, icon_map: dict[str, str]) -> str | None:
+    if not icon_map:
+        return None
+    # Shadow bosses reuse the base icon, the same fallback the site applies.
+    filename = icon_map.get(slug) or icon_map.get(re.sub(r"_SHADOW_FORM$", "", slug))
+    return f"{ICON_BASE_URL}/{filename}" if filename else None
+
+
+def fetch_type_map(session: requests.Session) -> dict[str, list[str]]:
+    """Boss types straight from the pokedex endpoint.
+
+    This replaced per-boss PokeAPI lookups, which needed a hand-maintained
+    alias table and still 404'd on forms PokeAPI names differently (the
+    ZAMAZENTA_HERO_FORM warnings in the old logs).
+    """
+    try:
+        data = fetch_json(POKEDEX_API_URL, session)
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("No boss types this run: %s", exc)
+        return {}
+    type_map: dict[str, list[str]] = {}
+    for mon in data.get("pokemon") or []:
+        pokemon_id = mon.get("pokemonId")
+        if not pokemon_id:
+            continue
+        type_map[pokemon_id] = [
+            value.removeprefix("POKEMON_TYPE_").lower()
+            for value in (mon.get("type"), mon.get("type2"))
+            if value
+        ]
+    return type_map
+
+
+def populate_types(raids: list[dict], type_map: dict[str, list[str]]) -> None:
     for raid in raids:
-        if raid.get("image"):
-            continue
-        slug = raid.get("_slug")
-        if not slug:
-            continue
-        if slug in cache:
-            raid["image"] = cache[slug]
-            continue
-        detail_url = urljoin(base_url, f"/raids/{slug}")
-        try:
-            html = fetch_html(detail_url, session=session)
-        except requests.RequestException:
-            cache[slug] = None
-            continue
-        icon_url = _extract_icon_url(html, raid.get("pokemon"))
-        if icon_url:
-            cache[slug] = icon_url
-            raid["image"] = icon_url
-            continue
-        meta_match = image_pattern.search(html)
-        if meta_match:
-            cache[slug] = meta_match.group(1)
-            raid["image"] = meta_match.group(1)
+        slug = raid.get("_slug") or ""
+        types = type_map.get(slug) or type_map.get(re.sub(r"_SHADOW_FORM$", "", slug))
+        if types:
+            raid["types"] = types
         else:
-            cache[slug] = None
+            log.warning("No types for %s", slug)
 
 
-log = logging.getLogger(__name__)
-
-
-def fetch_estimator(
-    slug: str, tier_raw: str, session: requests.Session
-) -> float | None:
+def fetch_estimator(slug: str, tier_raw: str, session: requests.Session) -> float | None:
     """Fetch the best-case Pokebattler Estimator for a raid boss."""
     url = (
         f"{FIGHT_API_BASE}/raids/defenders/{slug}/levels/{tier_raw}"
@@ -330,61 +308,7 @@ def fetch_estimator(
         return None
 
 
-# Species whose bare name 404s on PokeAPI because it only exists there under a
-# default *form* name. Verified against pokeapi.co (base name returns 404).
-POKEAPI_NAME_ALIASES = {
-    "giratina": "giratina-altered",
-    "deoxys": "deoxys-normal",
-    "shaymin": "shaymin-land",
-    "tornadus": "tornadus-incarnate",
-    "thundurus": "thundurus-incarnate",
-    "landorus": "landorus-incarnate",
-    "urshifu": "urshifu-single-strike",
-}
-
-
-def slug_to_pokeapi_name(slug: str) -> str:
-    """Convert a Pokebattler slug to a PokeAPI-compatible name."""
-    name = slug.lower()
-    name = re.sub(r"_shadow_form$", "", name)
-    name = re.sub(r"_form$", "", name)
-    name = re.sub(r"^mega_", "", name)
-    name = re.sub(r"_mega$", "", name)
-    name = re.sub(r"_primal$", "", name)
-    name = name.replace("_", "-")
-    return POKEAPI_NAME_ALIASES.get(name, name)
-
-
-def fetch_pokemon_types(slug: str, session: requests.Session) -> list[str]:
-    """Fetch Pokemon types from PokeAPI."""
-    name = slug_to_pokeapi_name(slug)
-    try:
-        resp = session.get(f"{POKEAPI_BASE}/{name}", timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        return [t["type"]["name"] for t in data.get("types", [])]
-    except (requests.RequestException, KeyError, ValueError) as exc:
-        log.warning("Failed to fetch types for %s (as %s): %s", slug, name, exc)
-        return []
-
-
-def populate_types(
-    raids: list[dict[str, str | None]], session: requests.Session
-) -> None:
-    """Fetch and store Pokemon types for each raid boss."""
-    for raid in raids:
-        slug = raid.get("_slug")
-        if not slug:
-            continue
-        types = fetch_pokemon_types(slug, session)
-        if types:
-            raid["types"] = types
-
-
-def populate_estimators(
-    raids: list[dict[str, str | None]], session: requests.Session
-) -> None:
-    """Replace HTML-scraped difficulty with the fight-API estimator."""
+def populate_estimators(raids: list[dict], session: requests.Session) -> None:
     for raid in raids:
         slug = raid.get("_slug")
         tier_raw = raid.get("tier_raw")
@@ -396,13 +320,13 @@ def populate_estimators(
             raid["difficulty_raw"] = estimator
 
 
-def write_output(path: Path, payload: list[dict[str, str | None]]) -> None:
+def write_output(path: Path, payload: list[dict]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default=POKEBATTLER_RAIDS_URL, help="Source page to scrape")
+    parser.add_argument("--url", default=RAIDS_API_URL, help="Raid API endpoint to read")
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Path to write the JSON payload")
     return parser.parse_args(argv)
 
@@ -410,13 +334,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     with create_session() as session:
-        html = fetch_html(args.url, session=session)
-        data_blob = extract_rehydrate_blob(html)
-        display_map = extract_display_metadata(html)
-        raids = build_raid_entries(data_blob, display_map, args.url)
-        populate_missing_images(raids, session, args.url)
+        blob = fetch_json(args.url, session)
+        raids = build_raid_entries(blob, fetch_icon_map(session))
+        if not raids:
+            # Writing an empty file would quietly blank the site; leaving the
+            # previous one in place lets the watchdog notice the staleness.
+            print("No current raids found, keeping the previous data")
+            return 1
+        populate_types(raids, fetch_type_map(session))
         populate_estimators(raids, session)
-        populate_types(raids, session)
     for raid in raids:
         raid.pop("_slug", None)
     output_path = Path(args.output)
@@ -426,4 +352,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     raise SystemExit(main())

@@ -56,7 +56,7 @@ curl -s https://raid.lackas.net/api/effectiveness/ghost/dragon
 `/api/raids` returns each raid with its `types`, the `effective_attackers` and
 `double_effective_attackers` types, a ready-to-paste in-game `search_string`,
 plus `difficulty`, `state` (`active`/`upcoming`) and `status`. `data_updated_at`
-is the age of the underlying scrape (refreshed daily at 3 AM UTC).
+is the age of the underlying data fetch (refreshed daily at 3 AM UTC).
 
 ```json
 {

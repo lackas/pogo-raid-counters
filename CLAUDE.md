@@ -8,7 +8,7 @@ Pokemon Go raid counter helper web app. Calculates type effectiveness against ra
 
 - **Pure Python WSGI app** — no web framework, just `wsgiref` and string-built HTML with Pico CSS
 - **`raid.py`** — Main web app. Handles routing, type effectiveness calculation, search string generation, and HTML rendering
-- **`availableraids.py`** — Scraper that fetches current raid data from Pokebattler (parses `window.REHYDRATE` JSON blob + HTML), then fetches per-boss difficulty estimators from the fight simulation API
+- **`availableraids.py`** — Fetches current raid data from the Pokebattler JSON APIs the site's own frontend uses (`/raids` for the rotation + `breakingNews` schedule, `/pokemon` for boss types), then per-boss difficulty estimators from the fight simulation API
 - **No templates** — HTML is constructed via string concatenation in `raid.py`
 
 ## URL Routing
@@ -59,16 +59,21 @@ Ruff via GitHub Actions on push/PR to main. Run locally: `ruff check .`
 
 - PoGo-specific type multipliers: 1.6x (super effective), 0.625x (not very effective), 0.390625x (double not very effective)
 - Search strings use `@1type` (fast move) and `@2type,@3type` (charge moves) format
-- Only Tier 5+ raids are displayed from Pokebattler data
+- Only Tier 5+ raids are displayed from Pokebattler data (the data file holds the whole rotation; `raid.py` filters)
 - Pokebattler lookup uses Google `site:pokebattler.com` search as a workaround
 - Difficulty (trainer count) comes from Pokebattler fight simulation API estimator, rounded up via `math.ceil`
+- **No HTML scraping.** pokebattler.com became a client-side SPA in October 2026 (the page is a 7 KB shell, `window.REHYDRATE` is gone, boss detail pages render client-side). Everything comes from JSON now; don't reintroduce page parsing.
 
 ## Pokebattler Fight API
 
 - Base: `https://fight.pokebattler.com`
+- `GET /raids` — `tiers[]` holds the live rotation per tier; `_FUTURE`/`_LEGACY`/`RAID_LEVEL_UNSET` are catalogues and must be skipped, `_MAX` is a different game mode
+- `GET /raids` → `breakingNews[]` — the schedule: `startDate`/`endDate` keyed by `(pokemon, tier)`, as epoch ms. With `localTime: true` (the normal case) these are **wall-clock times in California** that apply in each player's own timezone, which is what `RAID_SOURCE_TZ` renders and `raid.py` reads back
+- `GET /pokemon` — pokedex (7 MB); `type`/`type2` give boss types without PokeAPI's form-name guesswork
 - Estimator path: `attackers[0].randomMove.total.estimator` (NOT `attackers[0].total.estimator`)
 - Pokemon slugs use forms like `LUGIA_SHADOW_FORM`, `HO_OH_SHADOW_FORM`, `KYUREM_BLACK_FORM`
-- Tier values from the REHYDRATE blob (e.g. `RAID_LEVEL_5_SHADOW`, `RAID_LEVEL_MEGA_5`) work directly as API path params
+- Tier values (e.g. `RAID_LEVEL_5_SHADOW`, `RAID_LEVEL_MEGA_5`) work directly as API path params
+- Boss icons: filename table in a hash-named JS chunk, discovered page → `assets/index-*.js` → `assets/pokebattler-*.js`, served under `https://static.pokebattler.com/assets/pokemon/64/`. Strictly best-effort — a failure here must never fail the run
 
 ## Deployment
 
