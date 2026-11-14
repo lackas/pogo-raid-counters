@@ -246,6 +246,22 @@ ICON_ENTRY_RE = re.compile(
 )
 
 
+# Chunks that have held the icon table, most recently first. Pokebattler
+# split it out of `pokebattler-*` into a dedicated `pokemon-icons-*` chunk
+# some time before 2026-11-14; the old chunk kept ten stale Mega entries, so
+# the scrape still "succeeded" and every boss silently lost its picture.
+# Hence: try every candidate and keep the richest table, instead of trusting
+# the first one that yields anything at all.
+ICON_CHUNK_PATTERNS = (
+    r"assets/(pokemon-icons-[A-Za-z0-9_-]+\.js)",
+    r"assets/(pokebattler-[A-Za-z0-9_-]+\.js)",
+)
+
+# Below this, assume we found a leftover rather than the real table. The real
+# one carried 2332 entries on 2026-11-14, the stale chunk 10.
+MIN_ICON_ENTRIES = 100
+
+
 def fetch_icon_map(session: requests.Session) -> dict[str, str]:
     """Best effort: Pokebattler's own pokemonId -> icon filename table.
 
@@ -259,15 +275,31 @@ def fetch_icon_map(session: requests.Session) -> dict[str, str]:
         if not entry_match:
             raise RuntimeError("entry bundle not referenced in page")
         bundle = session.get(f"{POKEBATTLER_SITE}{entry_match.group(1)}", timeout=30).text
-        chunk_match = re.search(r"assets/(pokebattler-[A-Za-z0-9_-]+\.js)", bundle)
-        if not chunk_match:
-            raise RuntimeError("icon chunk not referenced in bundle")
-        chunk = session.get(f"{POKEBATTLER_SITE}/assets/{chunk_match.group(1)}", timeout=30).text
-        icon_map = dict(ICON_ENTRY_RE.findall(chunk))
-        if not icon_map:
-            raise RuntimeError("icon table not found in chunk")
-        log.info("Icon table: %d entries", len(icon_map))
-        return icon_map
+
+        best: dict[str, str] = {}
+        tried = []
+        for pattern in ICON_CHUNK_PATTERNS:
+            for name in dict.fromkeys(re.findall(pattern, bundle)):
+                chunk = session.get(f"{POKEBATTLER_SITE}/assets/{name}", timeout=30).text
+                candidate = dict(ICON_ENTRY_RE.findall(chunk))
+                tried.append(f"{name}={len(candidate)}")
+                if len(candidate) > len(best):
+                    best = candidate
+            if len(best) >= MIN_ICON_ENTRIES:
+                break
+
+        if not best:
+            raise RuntimeError(f"icon table not found (tried {', '.join(tried) or 'nothing'})")
+        if len(best) < MIN_ICON_ENTRIES:
+            # Loud, because the symptom is invisible: bosses just lose their
+            # pictures and nothing else breaks.
+            log.warning(
+                "Icon table suspiciously small: %d entries (tried %s) -- "
+                "Pokebattler probably moved it again",
+                len(best), ", ".join(tried),
+            )
+        log.info("Icon table: %d entries", len(best))
+        return best
     except (requests.RequestException, RuntimeError) as exc:
         log.warning("No boss icons this run: %s", exc)
         return {}
@@ -279,6 +311,119 @@ def icon_url(slug: str, icon_map: dict[str, str]) -> str | None:
     # Shadow bosses reuse the base icon, the same fallback the site applies.
     filename = icon_map.get(slug) or icon_map.get(re.sub(r"_SHADOW_FORM$", "", slug))
     return f"{ICON_BASE_URL}/{filename}" if filename else None
+
+
+# Pokebattler's Max Battle numbers come from a precomputed table shipped as a
+# JS asset, not from an API. The live calculator behind their /max/ pages
+# (`max-ranking`, `max-battle`) sits behind a JWT and a quota gate; this table
+# does not. Reached by walking a chain of hash-named chunks, same idea as the
+# icon table:
+#     /max/<anything>  ->  useMaxData-*.js  ->  maxbattles-*.js
+#                      ->  max-bosses-compact-*.js
+MAX_COUNTER_CHAIN = (
+    r"(useMaxData-[A-Za-z0-9_-]+\.js)",
+    r"(maxbattles-[A-Za-z0-9_-]+\.js)",
+    r"(max-bosses-compact-[A-Za-z0-9_-]+\.js)",
+)
+
+# Eternamax Eternatus is a raid-exclusive form almost nobody owns, and it tops
+# every single list by a wide margin (Entei: 0.74 against 2.90 for the next
+# one). Counting it would turn every trainer estimate into a number that only
+# a handful of players could reproduce.
+UNOBTAINABLE_MAX_COUNTERS = frozenset({"ETERNATUS_ETERNAMAX_FORM"})
+
+# How many counters to carry per boss. The table holds up to 20; the tail is
+# noise for a phone screen.
+MAX_COUNTERS_KEPT = 5
+
+
+def _js_object_to_json(text: str) -> dict:
+    """Decode the `var e={...}` literal of a Pokebattler chunk.
+
+    Their bundler emits backtick strings and bare identifier keys, so it is
+    valid JS but not valid JSON.
+    """
+    start = text.index("var e={") + len("var e=")
+    end = text.index(";export{", start)
+    literal = text[start:end].replace("`", '"')
+    literal = re.sub(r"([{,])([A-Za-z_][A-Za-z0-9_]*):", r'\1"\2":', literal)
+    return json.loads(literal)
+
+
+def fetch_max_counters(session: requests.Session) -> dict[str, dict]:
+    """Best effort: Pokebattler's precomputed Max Battle counters.
+
+    Returns ``{pokemonId: {"difficulty_raw": float, "counters": [...]}}``.
+    Like the icons, this is decoration on top of a run that must succeed
+    without it -- every failure is a warning and an empty map.
+    """
+    try:
+        url = f"{POKEBATTLER_SITE}/max/DYNAMAX_DIALGA"
+        text = session.get(url, timeout=30).text
+        for pattern in MAX_COUNTER_CHAIN:
+            match = re.search(pattern, text)
+            if not match:
+                raise RuntimeError(f"chunk matching {pattern} not referenced")
+            url = f"{POKEBATTLER_SITE}/assets/{match.group(1)}"
+            text = session.get(url, timeout=30).text
+
+        raw = _js_object_to_json(text)
+        table: dict[str, dict] = {}
+        for boss, entry in raw.items():
+            counters = []
+            for c in entry.get("c") or []:
+                if c.get("p") in UNOBTAINABLE_MAX_COUNTERS:
+                    continue
+                try:
+                    estimator = float(c["e"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                counters.append(
+                    {
+                        "pokemon": display_name(c["p"]),
+                        "quick_move": c.get("m1"),
+                        "charged_move": c.get("m2"),
+                        "estimator": round(estimator, 2),
+                    }
+                )
+            if not counters:
+                continue
+            counters.sort(key=lambda item: item["estimator"])
+            table[boss] = {
+                "difficulty_raw": counters[0]["estimator"],
+                "counters": counters[:MAX_COUNTERS_KEPT],
+            }
+        if not table:
+            raise RuntimeError("counter table parsed but empty")
+        log.info("Max Battle counters: %d bosses", len(table))
+        return table
+    except (requests.RequestException, RuntimeError, ValueError, KeyError) as exc:
+        log.warning("No Max Battle counters this run: %s", exc)
+        return {}
+
+
+def populate_max_counters(raids: list[dict], table: dict[str, dict]) -> None:
+    """Attach trainer estimate and counters to the Max Battle entries.
+
+    The table lags the rotation -- on 2026-11-14 it had 50 of the 61 live
+    bosses and was missing both current tier-5 ones -- so a miss is normal
+    and must leave the entry untouched rather than blank it.
+    """
+    if not table:
+        return
+    hits = 0
+    for raid in raids:
+        if not raid.get("max_battle"):
+            continue
+        entry = table.get(raid.get("_slug") or "")
+        if not entry:
+            continue
+        raid["difficulty"] = str(math.ceil(entry["difficulty_raw"]))
+        raid["difficulty_raw"] = entry["difficulty_raw"]
+        raid["counters"] = entry["counters"]
+        hits += 1
+    total = sum(1 for r in raids if r.get("max_battle"))
+    log.info("Max Battle counters matched: %d of %d", hits, total)
 
 
 def fetch_type_map(session: requests.Session) -> dict[str, list[str]]:
@@ -350,7 +495,8 @@ def populate_estimators(raids: list[dict], session: requests.Session) -> None:
             # phases, no Max Move levels, no four-trainer cap. It returned
             # estimator 1.278, i.e. "2 trainers", for a boss that takes a full
             # group. Publishing that would send someone to a Power Spot alone.
-            # No estimate is better than a confidently wrong one.
+            # Max Battles get their number from fetch_max_counters() instead,
+            # which reads Pokebattler's own precomputed Max table.
             continue
         estimator = fetch_estimator(slug, tier_raw, session)
         if estimator is not None:
@@ -381,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         populate_types(raids, fetch_type_map(session))
         populate_estimators(raids, session)
+        populate_max_counters(raids, fetch_max_counters(session))
     for raid in raids:
         raid.pop("_slug", None)
     output_path = Path(args.output)

@@ -162,10 +162,21 @@ def render_boss_card(boss):
         type_html = f"<a href='/{type_path}' class='raid-badge-row' style='text-decoration:none;'>{type_badges}</a>"
     else:
         type_html = ""
+    # Named counters, for Max Battles where a type badge is not enough: you
+    # cannot bring "a fighting type", you bring the Pokemon you actually have
+    # levelled as a Max attacker.
+    counters = boss.get("counters") or []
+    if counters:
+        items = "".join(
+            f"<li>{html.escape(c.get('pokemon', ''))}</li>" for c in counters[:3]
+        )
+        counter_html = f"<details class='counters'><summary>Counters</summary><ul>{items}</ul></details>"
+    else:
+        counter_html = ""
     return (
         f"<article class='raid-card {card_class}'>"
         f"{image_html}{link_start}<strong>{html.escape(boss['pokemon'])}</strong>{link_end}"
-        f"{type_html}{badge_row}<p>{boss['status']}</p></article>"
+        f"{type_html}{badge_row}<p>{boss['status']}</p>{counter_html}</article>"
     )
 
 
@@ -275,6 +286,7 @@ def _build_entry(raid, now, local_tz):
         "difficulty": diff_text,
         "difficulty_level": diff_value,
         "max_battle": is_max_battle(raid),
+        "counters": raid.get("counters") or [],
         "state": "active" if (start is None or start <= now) else "upcoming",
     }
 
@@ -590,6 +602,7 @@ def build_raids_payload(state_filter=None, loader=None, key="raids"):
             "difficulty": raid.get("difficulty") or None,
             "difficulty_level": raid.get("difficulty_level"),
             "max_battle": bool(raid.get("max_battle")),
+            "counters": raid.get("counters") or [],
             "url": raid.get("url"),
             "effective_attackers": eff["effective_attackers"] if eff else [],
             "double_effective_attackers": eff["double_effective_attackers"] if eff else [],
@@ -651,9 +664,11 @@ def api_response(start_response, path_parts, params):
             # Said in the payload, not only in the docs: a consumer that sees
             # no difficulty must know it is missing on purpose.
             payload["difficulty_note"] = (
-                "No trainer count: Pokebattler's simulator answers for _MAX tiers "
-                "but computes them as ordinary raids, which understates them badly. "
-                "Max Battle lobbies hold up to 4 trainers (tier 1-5)."
+                "Trainer counts come from Pokebattler's precomputed Max Battle table, "
+                "not from the raid simulator (which computes _MAX tiers as ordinary "
+                "raids and understates them badly). Eternamax Eternatus is excluded "
+                "as unobtainable. A Max Battle lobby holds 4 trainers, 100 for "
+                "Gigantamax. Bosses missing from the table carry no estimate."
             )
             return _json_response(start_response, payload)
         return _json_response(start_response, build_raids_payload(state))
@@ -772,17 +787,18 @@ def application(environ, start_response):
         body_parts.append('</section>')
 
     raid_section_html = render_boss_section(raid_list, "Tier 5+ Raids (Next 3 Days)")
-    # Same reasoning as the Tier-5 cut for raids: the standing rotation holds
-    # 36 tier-1 and 6 tier-2 mons that nobody organises an outing for, and on
-    # a phone they bury the two or three that are actually scheduled. The
-    # full list stays available at /api/maxbattles.
+    # Same reasoning as the Tier-5 cut for raids, only stricter: tier 3 and
+    # below is comfortably soloable, so a card there helps nobody organise
+    # anything. What is left are the ones worth rounding people up for. The
+    # full list, all tiers, stays available at /api/maxbattles.
     max_battle_html = render_boss_section(
-        [m for m in max_battle_list if max_tier_number(m.get("tier")) >= 3],
-        "Max Battles Tier 3+ (Power Spots)",
+        [m for m in max_battle_list if max_tier_number(m.get("tier")) >= 4],
+        "Max Battles Tier 4+ (Power Spots)",
         note=(
-            "Max Battles work differently from raids, so no trainer count is "
-            "shown: Pokebattler's simulator answers for these tiers but "
-            "computes them as ordinary raids, which understates them badly."
+            "Trainer counts come from Pokebattler's own Max Battle table, not "
+            "from the raid simulator, and exclude Eternamax Eternatus. A Max "
+            "Battle lobby holds 4 trainers (100 for Gigantamax). Bosses too "
+            "new for the table show no estimate."
         ),
     )
 

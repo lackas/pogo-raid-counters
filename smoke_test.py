@@ -75,6 +75,119 @@ def test_is_current_tier():
     print("OK: is_current_tier")
 
 
+def test_icon_map_picks_the_richest_chunk():
+    """Pokebattler moved the icon table and left a decoy behind.
+
+    Before 2026-11-14 the scraper took the first chunk that matched
+    `pokebattler-*`. When the table was split out into `pokemon-icons-*`, the
+    old chunk still held ten stale Mega entries -- so the scrape "succeeded",
+    returned 10 entries, and every boss on the site silently lost its picture.
+    Nothing else broke, which is what made it hard to notice.
+    """
+    import availableraids
+
+    def chunk(n, prefix="MON"):
+        return "".join(f"{prefix}{i}:`pokemon_icon_{i:03d}_00.png`," for i in range(n))
+
+    pages = {
+        "https://www.pokebattler.com/raids": '<script src="/assets/index-AAA.js"></script>',
+        "https://www.pokebattler.com/assets/index-AAA.js":
+            'import"./assets/pokemon-icons-BBB.js";import"./assets/pokebattler-CCC.js";',
+        # The real table, and the decoy that used to win.
+        "https://www.pokebattler.com/assets/pokemon-icons-BBB.js": chunk(150),
+        "https://www.pokebattler.com/assets/pokebattler-CCC.js": chunk(10, "OLD"),
+    }
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeSession:
+        def __init__(self):
+            self.seen = []
+
+        def get(self, url, timeout=None):
+            self.seen.append(url)
+            return FakeResponse(pages[url])
+
+    session = FakeSession()
+    icons = availableraids.fetch_icon_map(session)
+    assert len(icons) == 150, f"took the wrong chunk: {len(icons)} entries"
+    assert "MON7" in icons and "OLD7" not in icons
+
+    # And the degenerate case: only the decoy exists. Still no crash, still a
+    # usable (if poor) map -- icons are decoration and must never fail a run.
+    pages["https://www.pokebattler.com/assets/index-AAA.js"] = \
+        'import"./assets/pokebattler-CCC.js";'
+    icons = availableraids.fetch_icon_map(FakeSession())
+    assert len(icons) == 10
+
+    # A page with no bundle at all yields an empty map, not an exception.
+    pages["https://www.pokebattler.com/raids"] = "<html>no bundle here</html>"
+    assert availableraids.fetch_icon_map(FakeSession()) == {}
+    print("OK: icon map picks richest chunk")
+
+
+def test_max_counter_table():
+    """Pokebattler's precomputed Max table, walked and decoded.
+
+    The chain is page -> useMaxData-* -> maxbattles-* -> max-bosses-compact-*,
+    all hash-named, and the payload is a JS literal (backtick strings, bare
+    keys), not JSON.
+    """
+    import availableraids
+
+    table_js = (
+        "var e={"
+        "TOXTRICITY:{p:`TOXTRICITY`,t:`RAID_LEVEL_4_MAX`,g:`RAID_LEVEL_4_MAX`,"
+        "w:[`POKEMON_TYPE_GROUND`],c:["
+        "{p:`ETERNATUS_ETERNAMAX_FORM`,m1:`DRAGON_TAIL_FAST`,m2:`DYNAMAX_CANNON`,cat:`BEST`,e:`0.3000`},"
+        "{p:`FLYGON`,m1:`SAND_ATTACK_FAST`,m2:`EARTHQUAKE`,cat:`BEST`,e:`1.3600`},"
+        "{p:`EXCADRILL`,m1:`MUD_SHOT_FAST`,m2:`DRILL_RUN`,cat:`BEST`,e:`1.9000`}"
+        "]}};export{e as default};"
+    )
+    pages = {
+        "https://www.pokebattler.com/max/DYNAMAX_DIALGA": 'x"./assets/useMaxData-AAA.js"x',
+        "https://www.pokebattler.com/assets/useMaxData-AAA.js": 'x"./maxbattles-BBB.js"x',
+        "https://www.pokebattler.com/assets/maxbattles-BBB.js": 'x"./max-bosses-compact-CCC.js"x',
+        "https://www.pokebattler.com/assets/max-bosses-compact-CCC.js": table_js,
+    }
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeSession:
+        def get(self, url, timeout=None):
+            return FakeResponse(pages[url])
+
+    table = availableraids.fetch_max_counters(FakeSession())
+    assert set(table) == {"TOXTRICITY"}, table
+    entry = table["TOXTRICITY"]
+    # Eternamax is dropped, so the estimate is the best *obtainable* one.
+    names = [c["pokemon"] for c in entry["counters"]]
+    assert "Eternatus Eternamax Form" not in names, names
+    assert names[0] == "Flygon", names
+    assert entry["difficulty_raw"] == 1.36, entry
+
+    # Attaching it: only Max Battles, and a miss leaves the entry alone.
+    raids = [
+        {"_slug": "TOXTRICITY", "max_battle": True, "difficulty": None},
+        {"_slug": "DIALGA", "max_battle": True, "difficulty": None},   # not in table
+        {"_slug": "TOXTRICITY", "max_battle": False, "difficulty": "9"},  # a raid
+    ]
+    availableraids.populate_max_counters(raids, table)
+    assert raids[0]["difficulty"] == "2", raids[0]          # ceil(1.36)
+    assert len(raids[0]["counters"]) == 2
+    assert raids[1]["difficulty"] is None and "counters" not in raids[1]
+    assert raids[2]["difficulty"] == "9", "a raid must not be touched"
+
+    # A broken chain yields an empty table, never an exception.
+    pages["https://www.pokebattler.com/max/DYNAMAX_DIALGA"] = "nothing here"
+    assert availableraids.fetch_max_counters(FakeSession()) == {}
+    print("OK: max counter table")
+
+
 def test_max_battles_are_separated():
     """A Max Battle must never reach the raid list, and vice versa.
 
@@ -253,7 +366,8 @@ def test_watchdog():
 if __name__ == "__main__":
     tests = [test_imports, test_wsgi_app, test_type_effectiveness,
              test_format_difficulty, test_humanize_tier, test_display_name,
-             test_is_current_tier, test_max_battles_are_separated,
+             test_is_current_tier, test_icon_map_picks_the_richest_chunk,
+             test_max_counter_table, test_max_battles_are_separated,
              test_build_raid_entries, test_format_local,
              test_api_effectiveness, test_api_raids, test_watchdog]
     failed = 0
