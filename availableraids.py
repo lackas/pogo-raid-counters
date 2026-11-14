@@ -70,20 +70,27 @@ def source_tz() -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+def is_max_tier(tier: str) -> bool:
+    """True for Max Battle tiers (``RAID_LEVEL_5_MAX``, ``RAID_LEVEL_6_MAX``, ...).
+
+    Max Battles are a separate game mode fought at Power Spots, not at gyms.
+    They are carried in the same ``tiers[]`` structure as raids, so everything
+    downstream has to be able to tell them apart.
+    """
+    return "_MAX" in (tier or "")
+
+
 def is_current_tier(tier: str) -> bool:
     """True for tiers that describe the live rotation.
 
     ``_FUTURE`` and ``_LEGACY`` are catalogues of everything that ever ran or
     might run (several hundred entries), and ``RAID_LEVEL_UNSET`` holds the
-    whole pokedex. ``_MAX`` is excluded too: Max Battles are a separate game
-    mode, and is_tier_five_or_higher() in raid.py would render them as raid
-    cards.
+    whole pokedex. ``_MAX`` is kept -- Max Battles are a separate mode, but
+    the data is good and the app renders them in their own section.
     """
     if not tier or tier == "RAID_LEVEL_UNSET":
         return False
-    if tier.endswith(("_FUTURE", "_LEGACY")):
-        return False
-    return "_MAX" not in tier
+    return not tier.endswith(("_FUTURE", "_LEGACY"))
 
 
 # Name rewrites ported from Pokebattler's own bundle so our labels match the
@@ -117,6 +124,15 @@ def display_name(pokemon_id: str) -> str:
 def humanize_tier(tier: str) -> str:
     tier = tier or ""
     tier_upper = tier.upper()
+    # Max first: RAID_LEVEL_6_MAX would otherwise never be reached, and a
+    # Gigantamax boss labelled "Tier 6 Raid" sends people to a gym.
+    if is_max_tier(tier_upper):
+        if "RAID_LEVEL_6" in tier_upper:
+            return "Gigantamax"
+        level_match = re.search(r"RAID_LEVEL_(\d)", tier_upper)
+        if level_match:
+            return f"Max Battle Tier {level_match.group(1)}"
+        return "Max Battle"
     if "MEGA" in tier_upper:
         return "Mega Raid"
     if "ULTRA_BEAST" in tier_upper:
@@ -168,28 +184,39 @@ def build_raid_entries(blob: dict, icon_map: dict[str, str]) -> list[dict]:
     now_ms = datetime.now(UTC).timestamp() * 1000
     cutoff_ms = now_ms + UPCOMING_WINDOW_SECONDS * 1000
     raids: list[dict] = []
-    seen: set[str] = set()
+    # Keyed by (slug, mode), not by slug alone: a species can be a raid boss
+    # and a Max Battle at the same time (Sableye was both in Nov 2026), and
+    # dropping one of the two would hide a mode that is genuinely running.
+    seen: set[tuple[str, bool]] = set()
 
     for tier_info in blob.get("tiers") or []:
         tier_raw = tier_info.get("tier") or ""
         if not is_current_tier(tier_raw):
             continue
+        is_max = is_max_tier(tier_raw)
         for boss in tier_info.get("raids") or []:
             slug = boss.get("pokemonId") or boss.get("pokemon")
-            if not slug or slug in seen:
+            if not slug or (slug, is_max) in seen:
                 continue
 
             window = schedule.get((slug, tier_raw), {})
             start_ms = window.get("startDate") or boss.get("startDate")
             end_ms = window.get("endDate")
-            if not start_ms:
+            if start_ms:
+                if start_ms > cutoff_ms:
+                    continue
+                if end_ms and end_ms < now_ms:
+                    continue
+            elif not is_max:
+                # A raid without a window is an announcement we cannot place
+                # on a calendar, so it stays out.
                 continue
-            if start_ms > cutoff_ms:
-                continue
-            if end_ms and end_ms < now_ms:
-                continue
+            # A Max Battle without a window is the standing Power-Spot
+            # rotation (tiers 1-4). Those have no start or end -- they are
+            # simply available -- so a missing schedule must not drop them.
+            # Only tiers 5 and 6 get dated windows in breakingNews.
 
-            seen.add(slug)
+            seen.add((slug, is_max))
             raids.append(
                 {
                     "pokemon": display_name(slug),
@@ -201,6 +228,7 @@ def build_raid_entries(blob: dict, icon_map: dict[str, str]) -> list[dict]:
                     "difficulty": None,
                     "tier": humanize_tier(tier_raw),
                     "tier_raw": tier_raw,
+                    "max_battle": is_max,
                     "pokebattler_url": f"{POKEBATTLER_SITE}/raids/{slug}",
                     "_slug": slug,
                 }
@@ -313,6 +341,16 @@ def populate_estimators(raids: list[dict], session: requests.Session) -> None:
         slug = raid.get("_slug")
         tier_raw = raid.get("tier_raw")
         if not slug or not tier_raw:
+            continue
+        if raid.get("max_battle"):
+            # The endpoint answers for _MAX tiers, but the number is wrong and
+            # wrong in a dangerous direction. Checked on 2026-11-14 for Dialga:
+            # the raid entry declares hp 13000 at cpm 0.7, the simulation ran
+            # stamina 9080 at level 40 with ordinary charged moves -- no Max
+            # phases, no Max Move levels, no four-trainer cap. It returned
+            # estimator 1.278, i.e. "2 trainers", for a boss that takes a full
+            # group. Publishing that would send someone to a Power Spot alone.
+            # No estimate is better than a confidently wrong one.
             continue
         estimator = fetch_estimator(slug, tier_raw, session)
         if estimator is not None:

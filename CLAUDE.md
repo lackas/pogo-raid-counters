@@ -21,6 +21,7 @@ Read-only JSON, no auth (all data is public game data — a token would be frict
 
 - `GET /api` — endpoint discovery + valid type names
 - `GET /api/raids[?state=active|upcoming]` — current tier 5+ raids, each enriched with `types`, `effective_attackers`, `double_effective_attackers`, and a ready-to-paste `search_string`
+- `GET /api/maxbattles[?state=active|upcoming]` — Max Battles, same item shape plus `max_battle: true` and a `difficulty_note`. Never carries a trainer count
 - `GET /api/effectiveness/<type1>[/<type2>]` — counters for an arbitrary type combo
 
 Implemented in `raid.py`: `build_raids_payload()`, `build_effectiveness()`, `api_response()` (routed from `application()` before the type-path handling). Covered by `smoke_test.py::test_api_raids` / `test_api_effectiveness`.
@@ -60,6 +61,9 @@ Ruff via GitHub Actions on push/PR to main. Run locally: `ruff check .`
 - PoGo-specific type multipliers: 1.6x (super effective), 0.625x (not very effective), 0.390625x (double not very effective)
 - Search strings use `@1type` (fast move) and `@2type,@3type` (charge moves) format
 - Only Tier 5+ raids are displayed from Pokebattler data (the data file holds the whole rotation; `raid.py` filters)
+- **Max Battles are a second, separate section**, never raid cards. They are told apart by the `max_battle` flag (`is_max_battle()` falls back to the tier string for older data files), not by tier — `RAID_LEVEL_5_MAX` and `_6_MAX` both pass `is_tier_five_or_higher()`, and a Power-Spot boss on a raid card sends people to a gym. Tier 6 renders as "Gigantamax".
+- **Max Battles deliberately show no trainer count.** The estimator endpoint answers for `_MAX` tiers, but it ignores the Max boss stats: checked 2026-11-14 for Dialga, the raid entry declares `hp 13000` at `cpm 0.7` while the simulation ran `stamina 9080` at level 40 with ordinary charged moves — no Max phases, no Max Move levels. It returned `1.278`, i.e. "2 trainers", for a boss whose lobby holds 4. `populate_estimators()` therefore skips them. Don't "fix" this by re-enabling the call.
+- Max Battles in tiers 5/6 get dated windows from `breakingNews`; tiers 1-4 are the standing Power-Spot rotation with **no schedule at all**, so a missing window must not drop them (`build_raid_entries()`) and renders as "Always available"
 - Pokebattler lookup uses Google `site:pokebattler.com` search as a workaround
 - Difficulty (trainer count) comes from Pokebattler fight simulation API estimator, rounded up via `math.ceil`
 - **No HTML scraping.** pokebattler.com became a client-side SPA in October 2026 (the page is a 7 KB shell, `window.REHYDRATE` is gone, boss detail pages render client-side). Everything comes from JSON now; don't reintroduce page parsing.

@@ -66,9 +66,61 @@ def test_is_current_tier():
     assert not is_current_tier("RAID_LEVEL_5_FUTURE")
     assert not is_current_tier("RAID_LEVEL_5_LEGACY")
     assert not is_current_tier("RAID_LEVEL_UNSET")
-    # Max Battles are a different game mode and must not become raid cards
-    assert not is_current_tier("RAID_LEVEL_5_MAX")
+    # Max Battles are kept now: they are a different game mode, but the data
+    # is good and they get their own section. They must still be *marked* as
+    # a different mode -- see test_max_battles_are_separated().
+    assert is_current_tier("RAID_LEVEL_5_MAX")
+    assert not is_current_tier("RAID_LEVEL_5_MAX_FUTURE")
+    assert not is_current_tier("RAID_LEVEL_5_MAX_LEGACY")
     print("OK: is_current_tier")
+
+
+def test_max_battles_are_separated():
+    """A Max Battle must never reach the raid list, and vice versa.
+
+    RAID_LEVEL_5_MAX and _6_MAX both satisfy is_tier_five_or_higher(), so a
+    tier-based filter would silently send people to a gym for a boss that
+    only exists at a Power Spot.
+    """
+    import json
+    import tempfile
+
+    import raid
+
+    rows = [
+        {"pokemon": "Cresselia", "tier_raw": "RAID_LEVEL_5",
+         "start_local": "Nov 10, 2026 6:00 AM", "end_local": "Nov 30, 2099 8:00 PM",
+         "types": ["psychic"], "difficulty": "2", "max_battle": False},
+        {"pokemon": "Dialga", "tier_raw": "RAID_LEVEL_5_MAX",
+         "start_local": "Nov 10, 2026 5:00 AM", "end_local": "Nov 30, 2099 8:00 PM",
+         "types": ["steel", "dragon"], "difficulty": None, "max_battle": True},
+        # The standing Power-Spot rotation: no window at all.
+        {"pokemon": "Sableye", "tier_raw": "RAID_LEVEL_3_MAX",
+         "types": ["dark", "ghost"], "difficulty": None, "max_battle": True},
+        # Written before the flag existed -- must still be detected by tier.
+        {"pokemon": "Eternatus", "tier_raw": "RAID_LEVEL_6_MAX",
+         "types": ["poison", "dragon"]},
+    ]
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fp:
+        json.dump(rows, fp)
+        path = fp.name
+
+    raids = raid.load_available_raids(path)
+    maxes = raid.load_max_battles(path)
+
+    assert [r["pokemon"] for r in raids] == ["Cresselia"], raids
+    assert {r["pokemon"] for r in maxes} == {"Dialga", "Sableye", "Eternatus"}, maxes
+    # No trainer count on a Max Battle: the simulator's number is wrong there.
+    assert all(not r["difficulty"] for r in maxes)
+    # An unscheduled Max Battle is permanent, not "starting soon".
+    sableye = next(r for r in maxes if r["pokemon"] == "Sableye")
+    assert sableye["status"] == "Always available", sableye
+    assert sableye["state"] == "active"
+    # Tier 6 is Gigantamax, not "Tier 6".
+    eternatus = next(r for r in maxes if r["pokemon"] == "Eternatus")
+    assert eternatus["tier"] == "Gigantamax", eternatus
+    assert eternatus["tier_class"] == "tier-max"
+    print("OK: max battles separated")
 
 
 def test_build_raid_entries():
@@ -201,7 +253,8 @@ def test_watchdog():
 if __name__ == "__main__":
     tests = [test_imports, test_wsgi_app, test_type_effectiveness,
              test_format_difficulty, test_humanize_tier, test_display_name,
-             test_is_current_tier, test_build_raid_entries, test_format_local,
+             test_is_current_tier, test_max_battles_are_separated,
+             test_build_raid_entries, test_format_local,
              test_api_effectiveness, test_api_raids, test_watchdog]
     failed = 0
     for test in tests:

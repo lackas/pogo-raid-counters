@@ -129,6 +129,71 @@ def render_type_badges(label_text, types, tag='p'):
     prefix = f'{escaped_label}: ' if escaped_label else ''
     return f'<{tag}>{prefix}{badges}</{tag}>'
 
+def render_boss_card(boss):
+    """One card, used for both raid bosses and Max Battle bosses."""
+    image_html = (
+        f'<img src="{html.escape(boss["image"])}" alt="{html.escape(boss["pokemon"])}" style="max-width:100px;display:block;">'
+        if boss.get("image") else ''
+    )
+    link_start = (
+        f'<a href="{html.escape(boss["url"])}" target="_blank" rel="noopener">'
+        if boss.get("url") else '<span>'
+    )
+    link_end = '</a>' if boss.get("url") else '</span>'
+    card_class = "upcoming" if boss.get("state") == "upcoming" else ""
+    tier_badge = (
+        f"<span class='raid-badge {boss.get('tier_class', '')}'>{html.escape(boss.get('tier', ''))}</span>"
+        if boss.get("tier") else ""
+    )
+    difficulty_text = boss.get("difficulty")
+    diff_class = difficulty_class(boss.get("difficulty_level"))
+    difficulty_badge = (
+        f"<span class='raid-badge {diff_class}'>{html.escape(difficulty_text)}</span>"
+        if difficulty_text else ""
+    )
+    badge_row = f"<div class='raid-badge-row'>{tier_badge}{difficulty_badge}</div>"
+    boss_types = boss.get("types", [])
+    if boss_types:
+        type_path = "/".join(boss_types)
+        type_badges = "".join(
+            f"<span class='type-badge type-{t}'>{t.capitalize()}</span>"
+            for t in boss_types
+        )
+        type_html = f"<a href='/{type_path}' class='raid-badge-row' style='text-decoration:none;'>{type_badges}</a>"
+    else:
+        type_html = ""
+    return (
+        f"<article class='raid-card {card_class}'>"
+        f"{image_html}{link_start}<strong>{html.escape(boss['pokemon'])}</strong>{link_end}"
+        f"{type_html}{badge_row}<p>{boss['status']}</p></article>"
+    )
+
+
+def max_tier_number(tier_label):
+    """Numeric tier behind a rendered Max label ('Max 3', 'Gigantamax').
+
+    Gigantamax carries no digit but is the top tier, so it must not sort as 0
+    and fall out of a 'tier 3 and up' filter.
+    """
+    label = (tier_label or "").strip()
+    if label.lower() == "gigantamax":
+        return 6
+    match = re.search(r"(\d)", label)
+    return int(match.group(1)) if match else 0
+
+
+def render_boss_section(bosses, heading, note=None):
+    """A headed grid of boss cards, or nothing at all when the list is empty."""
+    if not bosses:
+        return ""
+    note_html = f"<p class='section-note'>{html.escape(note)}</p>" if note else ""
+    cards = "".join(render_boss_card(boss) for boss in bosses)
+    return (
+        f"<section><h2>{html.escape(heading)}</h2>{note_html}"
+        f'<div class="raid-grid">{cards}</div></section>'
+    )
+
+
 # Ensure only canonical type names are used when rendering output
 def normalize_type(value):
     value = (value or '').strip().lower()
@@ -146,58 +211,122 @@ def parse_local_timestamp(value, local_tz):
         return None
 
 
-def load_available_raids(path=None):
+def _read_raid_data(path=None):
     data_path = path or os.environ.get("RAID_DATA_PATH") or "/data/available_raids.json"
     if not os.path.exists(data_path):
         return []
     try:
         with open(data_path, "r", encoding="utf-8") as fp:
-            data = json.load(fp)
+            return json.load(fp)
     except (OSError, json.JSONDecodeError):
         return []
-    now = datetime.now(UTC)
+
+
+def _source_tz():
     # Timestamps from the source site appear to use California time; default to that unless overridden.
     source_tz_name = os.environ.get("RAID_SOURCE_TZ", "America/Los_Angeles")
     try:
-        local_tz = ZoneInfo(source_tz_name)
+        return ZoneInfo(source_tz_name)
     except Exception:
-        local_tz = ZoneInfo("UTC")
-    active = []
-    upcoming = []
-    for raid in data:
-        tier_label = raid.get("tier_raw") or raid.get("tier", "")
-        if not is_tier_five_or_higher(tier_label):
-            continue
-        start = parse_timestamp(raid.get("start_utc"))
-        end = parse_timestamp(raid.get("end_utc"))
-        # Prefer local timestamps if provided, converting to UTC for consistent comparison.
-        start_local = parse_local_timestamp(raid.get("start_local"), local_tz)
-        end_local = parse_local_timestamp(raid.get("end_local"), local_tz)
-        if start_local:
-            start = start_local.astimezone(UTC)
-        if end_local:
-            end = end_local.astimezone(UTC)
-        diff_text, diff_value = format_difficulty_label(raid.get("difficulty"))
-        if end and end < now:
-            continue
-        entry = {
-            "pokemon": raid.get("pokemon", "Unknown"),
-            "image": raid.get("image"),
-            "url": raid.get("pokebattler_url"),
-            "tier": humanize_tier_label(tier_label or raid.get("tier", "")),
-            "tier_class": classify_tier_badge(tier_label or raid.get("tier", "")),
-            "start": start,
-            "end": end,
-            "status": humanize_schedule(now, start, end),
-            "types": raid.get("types", []),
-            "difficulty": diff_text,
-            "difficulty_level": diff_value,
-            "state": "active" if start and start <= now else "upcoming"
-        }
-        (active if entry["state"] == "active" else upcoming).append(entry)
+        return ZoneInfo("UTC")
+
+
+def is_max_battle(raid):
+    """Max Battles are fought at Power Spots, not at gyms.
+
+    The flag is written by availableraids.py; the tier string is the fallback
+    for data files written before Max Battles were included.
+    """
+    if raid.get("max_battle"):
+        return True
+    return "_MAX" in (raid.get("tier_raw") or "").upper()
+
+
+def _build_entry(raid, now, local_tz):
+    """Shared shape for a raid card and a Max Battle card.
+
+    Returns None for anything already over.
+    """
+    tier_label = raid.get("tier_raw") or raid.get("tier", "")
+    start = parse_timestamp(raid.get("start_utc"))
+    end = parse_timestamp(raid.get("end_utc"))
+    # Prefer local timestamps if provided, converting to UTC for consistent comparison.
+    start_local = parse_local_timestamp(raid.get("start_local"), local_tz)
+    end_local = parse_local_timestamp(raid.get("end_local"), local_tz)
+    if start_local:
+        start = start_local.astimezone(UTC)
+    if end_local:
+        end = end_local.astimezone(UTC)
+    if end and end < now:
+        return None
+    diff_text, diff_value = format_difficulty_label(raid.get("difficulty"))
+    return {
+        "pokemon": raid.get("pokemon", "Unknown"),
+        "image": raid.get("image"),
+        "url": raid.get("pokebattler_url"),
+        "tier": humanize_tier_label(tier_label or raid.get("tier", "")),
+        "tier_class": classify_tier_badge(tier_label or raid.get("tier", "")),
+        "start": start,
+        "end": end,
+        # A Max Battle with no window is the standing Power-Spot rotation,
+        # not something scheduled; saying "ends in 3h" would be a lie.
+        "status": humanize_schedule(now, start, end) if (start or end) else "Always available",
+        "types": raid.get("types", []),
+        "difficulty": diff_text,
+        "difficulty_level": diff_value,
+        "max_battle": is_max_battle(raid),
+        "state": "active" if (start is None or start <= now) else "upcoming",
+    }
+
+
+def _sorted_entries(active, upcoming):
     active.sort(key=lambda item: item.get("end") or datetime.max.replace(tzinfo=UTC))
     upcoming.sort(key=lambda item: item.get("start") or datetime.max.replace(tzinfo=UTC))
     return active + upcoming
+
+
+def load_available_raids(path=None):
+    now = datetime.now(UTC)
+    local_tz = _source_tz()
+    active = []
+    upcoming = []
+    for raid in _read_raid_data(path):
+        # Max Battles are excluded by flag, not by tier: RAID_LEVEL_5_MAX and
+        # _6_MAX both pass is_tier_five_or_higher() and would otherwise show
+        # up as gym raids.
+        if is_max_battle(raid):
+            continue
+        tier_label = raid.get("tier_raw") or raid.get("tier", "")
+        if not is_tier_five_or_higher(tier_label):
+            continue
+        entry = _build_entry(raid, now, local_tz)
+        if entry is None:
+            continue
+        (active if entry["state"] == "active" else upcoming).append(entry)
+    return _sorted_entries(active, upcoming)
+
+
+def load_max_battles(path=None):
+    """Max Battles, newest-expiring first, standing rotation last.
+
+    Tiers 5 and 6 get dated windows from breakingNews; tiers 1-4 are the
+    permanent Power-Spot rotation and carry no schedule at all.
+    """
+    now = datetime.now(UTC)
+    local_tz = _source_tz()
+    scheduled = []
+    standing = []
+    for raid in _read_raid_data(path):
+        if not is_max_battle(raid):
+            continue
+        entry = _build_entry(raid, now, local_tz)
+        if entry is None:
+            continue
+        (scheduled if (entry["start"] or entry["end"]) else standing).append(entry)
+    active = [e for e in scheduled if e["state"] == "active"]
+    upcoming = [e for e in scheduled if e["state"] == "upcoming"]
+    standing.sort(key=lambda item: (item.get("tier") or "", item.get("pokemon") or ""))
+    return _sorted_entries(active, upcoming) + standing
 
 
 def parse_timestamp(value):
@@ -254,6 +383,15 @@ def humanize_schedule(now, start, end):
 
 def humanize_tier_label(tier_label):
     label = (tier_label or "").upper()
+    # Max first, and before the MEGA test: "_MAX" contains no "MEGA", but
+    # RAID_LEVEL_6_MAX must not come out as a plain "Tier 6".
+    if "_MAX" in label:
+        if "RAID_LEVEL_6" in label:
+            return "Gigantamax"
+        for num in range(1, 8):
+            if f"RAID_LEVEL_{num}" in label:
+                return f"Max {num}"
+        return "Max"
     if "SHADOW" in label:
         base = "Shadow"
     elif "MEGA" in label:
@@ -295,6 +433,9 @@ def format_difficulty_label(value):
 
 def classify_tier_badge(tier_label):
     label = (tier_label or "").upper()
+    # Before the MEGA test, same reason as in humanize_tier_label().
+    if "_MAX" in label:
+        return "tier-max"
     if "SHADOW" in label:
         return "tier-shadow"
     if "MEGA" in label:
@@ -420,10 +561,16 @@ def _data_updated_at():
     return datetime.fromtimestamp(os.path.getmtime(path), tz=UTC).isoformat()
 
 
-def build_raids_payload(state_filter=None):
-    """Current tier 5+ raids, each enriched with effective attackers + search string."""
+def build_raids_payload(state_filter=None, loader=None, key="raids"):
+    """Bosses enriched with effective attackers + search string.
+
+    `loader` selects the mode: gym raids by default, Max Battles when
+    load_max_battles is passed. The item shape is identical so a consumer can
+    treat both lists the same, except that a Max Battle never carries a
+    trainer count -- see populate_estimators() in availableraids.py.
+    """
     items = []
-    for raid in load_available_raids():
+    for raid in (loader or load_available_raids)():
         state = raid.get("state")
         if state_filter and state != state_filter:
             continue
@@ -442,6 +589,7 @@ def build_raids_payload(state_filter=None):
             "types": raid.get("types", []),
             "difficulty": raid.get("difficulty") or None,
             "difficulty_level": raid.get("difficulty_level"),
+            "max_battle": bool(raid.get("max_battle")),
             "url": raid.get("url"),
             "effective_attackers": eff["effective_attackers"] if eff else [],
             "double_effective_attackers": eff["double_effective_attackers"] if eff else [],
@@ -451,7 +599,7 @@ def build_raids_payload(state_filter=None):
         "generated_at": datetime.now(UTC).isoformat(),
         "data_updated_at": _data_updated_at(),
         "count": len(items),
-        "raids": items,
+        key: items,
     }
 
 
@@ -461,6 +609,11 @@ API_HELP = {
             "Current tier 5+ raids (active + upcoming ~3 days). Each raid includes its "
             "types, the effective attacker types, and an in-game search string. "
             "Optional ?state=active or ?state=upcoming."
+        ),
+        "/api/maxbattles": (
+            "Current Max Battles at Power Spots, same shape as /api/raids. Tiers 5 "
+            "and 6 carry a dated window, tiers 1-4 are the standing rotation and have "
+            "none. Never carries a trainer count. Optional ?state=active or ?state=upcoming."
         ),
         "/api/effectiveness/<type>": "Effective attackers against a single boss type.",
         "/api/effectiveness/<type1>/<type2>": "Effective attackers against a dual-type boss.",
@@ -485,7 +638,7 @@ def api_response(start_response, path_parts, params):
     if not path_parts:
         return _json_response(start_response, API_HELP)
     section = path_parts[0]
-    if section == 'raids':
+    if section in ('raids', 'maxbattles'):
         state = (params.get('state', [''])[0] or '').strip().lower() or None
         if state and state not in {'active', 'upcoming'}:
             return _json_response(
@@ -493,6 +646,16 @@ def api_response(start_response, path_parts, params):
                 {"error": "state must be 'active' or 'upcoming'"},
                 '400 Bad Request',
             )
+        if section == 'maxbattles':
+            payload = build_raids_payload(state, loader=load_max_battles, key='max_battles')
+            # Said in the payload, not only in the docs: a consumer that sees
+            # no difficulty must know it is missing on purpose.
+            payload["difficulty_note"] = (
+                "No trainer count: Pokebattler's simulator answers for _MAX tiers "
+                "but computes them as ordinary raids, which understates them badly. "
+                "Max Battle lobbies hold up to 4 trainers (tier 1-5)."
+            )
+            return _json_response(start_response, payload)
         return _json_response(start_response, build_raids_payload(state))
     if section == 'effectiveness':
         req_types = [t for t in (normalize_type(p) for p in path_parts[1:3]) if t]
@@ -568,6 +731,8 @@ def application(environ, start_response):
         '        .tier-legendary { background-color: #d4af37; color: #1f1f1f; }',
         '        .tier-shadow { background: linear-gradient(120deg, #2c003e, #5a189a); color: #fff; }',
         '        .tier-mega { background: linear-gradient(120deg, #00acc1, #2ec4b6); color: #fff; }',
+        # Dynamax red, so a Power-Spot card is never mistaken for a gym raid.
+        '        .tier-max { background: linear-gradient(120deg, #c2185b, #e91e63); color: #fff; }',
         '        .difficulty-easy { background-color: #2e7d32; color: #fff; }',
         '        .difficulty-medium { background-color: #66bb6a; color: #1f1f1f; }',
         '        .difficulty-warning { background-color: #ffeb3b; color: #1f1f1f; }',
@@ -583,6 +748,7 @@ def application(environ, start_response):
     ]
 
     raid_list = load_available_raids()
+    max_battle_list = load_max_battles()
 
     if raid_type1:
         (effective_attackers, double_attackers, resisting_attackers) = calculate_effectiveness(raid_type1, raid_type2 or None)
@@ -605,51 +771,20 @@ def application(environ, start_response):
             body_parts.append(render_copy_block('Double effective', double_search, 'double-search-string'))
         body_parts.append('</section>')
 
-    raid_section_html = ""
-    if raid_list:
-        raid_cards = []
-        for raid in raid_list:
-            image_html = (
-                f'<img src="{html.escape(raid["image"])}" alt="{html.escape(raid["pokemon"])}" style="max-width:100px;display:block;">'
-                if raid.get("image") else ''
-            )
-            link_start = (
-                f'<a href="{html.escape(raid["url"])}" target="_blank" rel="noopener">'
-                if raid.get("url") else '<span>'
-            )
-            link_end = '</a>' if raid.get("url") else '</span>'
-            card_class = "upcoming" if raid.get("state") == "upcoming" else ""
-            tier_badge = f"<span class='raid-badge {raid.get('tier_class', '')}'>{html.escape(raid.get('tier', ''))}</span>" if raid.get("tier") else ""
-            difficulty_text = raid.get("difficulty")
-            diff_class = difficulty_class(raid.get("difficulty_level"))
-            difficulty_badge = (
-                f"<span class='raid-badge {diff_class}'>{html.escape(difficulty_text)}</span>"
-                if difficulty_text else ""
-            )
-            badge_row = f"<div class='raid-badge-row'>{tier_badge}{difficulty_badge}</div>"
-            boss_types = raid.get("types", [])
-            if boss_types:
-                type_path = "/".join(boss_types)
-                type_badges = "".join(
-                    f"<span class='type-badge type-{t}'>{t.capitalize()}</span>"
-                    for t in boss_types
-                )
-                type_html = f"<a href='/{type_path}' class='raid-badge-row' style='text-decoration:none;'>{type_badges}</a>"
-            else:
-                type_html = ""
-            raid_cards.append(
-                
-                    f"<article class='raid-card {card_class}'>"
-                    f"{image_html}{link_start}<strong>{html.escape(raid['pokemon'])}</strong>{link_end}"
-                    f"{type_html}{badge_row}<p>{raid['status']}</p></article>"
-                
-            )
-        raid_section_html = """
-        <section>
-            <h2>Tier 5+ Raids (Next 3 Days)</h2>
-            <div class="raid-grid">
-        """ + ''.join(raid_cards) + """</div></section>
-        """
+    raid_section_html = render_boss_section(raid_list, "Tier 5+ Raids (Next 3 Days)")
+    # Same reasoning as the Tier-5 cut for raids: the standing rotation holds
+    # 36 tier-1 and 6 tier-2 mons that nobody organises an outing for, and on
+    # a phone they bury the two or three that are actually scheduled. The
+    # full list stays available at /api/maxbattles.
+    max_battle_html = render_boss_section(
+        [m for m in max_battle_list if max_tier_number(m.get("tier")) >= 3],
+        "Max Battles Tier 3+ (Power Spots)",
+        note=(
+            "Max Battles work differently from raids, so no trainer count is "
+            "shown: Pokebattler's simulator answers for these tiers but "
+            "computes them as ordinary raids, which understates them badly."
+        ),
+    )
 
     script_name = html.escape(environ.get('SCRIPT_NAME', ''))
 
@@ -681,6 +816,7 @@ def application(environ, start_response):
             </form>
         </section>
         {raid_section_html}
+        {max_battle_html}
     </main>
     """)
 
