@@ -336,6 +336,25 @@ UNOBTAINABLE_MAX_COUNTERS = frozenset({"ETERNATUS_ETERNAMAX_FORM"})
 # noise for a phone screen.
 MAX_COUNTERS_KEPT = 5
 
+# Above this the estimator has stopped measuring and is just pinned to its
+# ceiling. Checked on 2026-11-14: for every tier 4 and 5 boss the values
+# spread cleanly (Toxtricity 1.09..4.58, Registeel 1.94..7.58, nothing above
+# 90). For both tier 6 bosses three quarters of the list sits at 96..99.5 --
+# and Gigantamax Machamp, which every guide names as *the* counter against
+# fighting-weak Duraludon, comes dead last at 99.52. The model clearly does
+# not represent a Gigantamax fight, which is run in groups of four with Max
+# Guard tanks and Max Spirit healers rather than by everyone attacking.
+SATURATED_ESTIMATOR = 90.0
+SATURATED_SHARE = 0.5
+
+
+def _is_saturated(estimators: list[float]) -> bool:
+    """True when most of the list is pinned at the ceiling (see above)."""
+    if not estimators:
+        return True
+    pinned = sum(1 for e in estimators if e > SATURATED_ESTIMATOR)
+    return pinned / len(estimators) > SATURATED_SHARE
+
 
 def _js_object_to_json(text: str) -> dict:
     """Decode the `var e={...}` literal of a Pokebattler chunk.
@@ -369,6 +388,7 @@ def fetch_max_counters(session: requests.Session) -> dict[str, dict]:
 
         raw = _js_object_to_json(text)
         table: dict[str, dict] = {}
+        skipped: list[str] = []
         for boss, entry in raw.items():
             counters = []
             for c in entry.get("c") or []:
@@ -389,13 +409,22 @@ def fetch_max_counters(session: requests.Session) -> dict[str, dict]:
             if not counters:
                 continue
             counters.sort(key=lambda item: item["estimator"])
+            if _is_saturated([c["estimator"] for c in counters]):
+                # Both number and ranking are unusable here, so publish
+                # neither. Better an empty card than a confident 74.
+                log.info("Max Battle counters: skipping %s, estimator saturated", boss)
+                skipped.append(boss)
+                continue
             table[boss] = {
                 "difficulty_raw": counters[0]["estimator"],
                 "counters": counters[:MAX_COUNTERS_KEPT],
             }
         if not table:
             raise RuntimeError("counter table parsed but empty")
-        log.info("Max Battle counters: %d bosses", len(table))
+        log.info(
+            "Max Battle counters: %d bosses (%d skipped as saturated)",
+            len(table), len(skipped),
+        )
         return table
     except (requests.RequestException, RuntimeError, ValueError, KeyError) as exc:
         log.warning("No Max Battle counters this run: %s", exc)
@@ -424,6 +453,72 @@ def populate_max_counters(raids: list[dict], table: dict[str, dict]) -> None:
         hits += 1
     total = sum(1 for r in raids if r.get("max_battle"))
     log.info("Max Battle counters matched: %d of %d", hits, total)
+
+
+# Where mirrored icons live, and the path the app serves them under. They are
+# kept next to the data file so one volume holds everything stateful.
+DEFAULT_ICON_DIR = "/data/icons"
+ICON_ROUTE = "/icons"
+
+# A mirrored name must survive being put in a URL and a filename, and
+# Pokebattler's newer set has a directory in it ("pm/pm884.icon.png").
+ICON_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def mirrored_icon_name(remote_filename: str) -> str:
+    return ICON_SAFE_RE.sub("_", remote_filename)
+
+
+def mirror_icons(raids: list[dict], session: requests.Session, icon_dir: str) -> None:
+    """Copy each boss icon once, then serve it from here instead of hotlinking.
+
+    Two reasons, and traffic is not one of them -- the site sees a handful of
+    visits a day. First, every page view currently fetches ~30 images from
+    Pokebattler's CDN; mirroring ends that. Second and more useful: once a
+    file is here it stays. When the icon table broke on 2026-11-14 every boss
+    lost its picture at once; with a mirror the old files would simply have
+    remained in place.
+
+    Already-mirrored files are never re-fetched, so a normal run makes zero
+    requests. Failures are per-icon and silent-ish: the entry keeps its remote
+    URL, which still works.
+    """
+    directory = Path(icon_dir)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning("Cannot mirror icons into %s: %s", icon_dir, exc)
+        return
+
+    fetched = reused = failed = 0
+    for raid in raids:
+        url = raid.get("image") or ""
+        if not url.startswith(ICON_BASE_URL):
+            continue
+        remote = url[len(ICON_BASE_URL) :].lstrip("/")
+        name = mirrored_icon_name(remote)
+        target = directory / name
+        if target.exists() and target.stat().st_size > 0:
+            reused += 1
+        else:
+            try:
+                resp = session.get(url, timeout=20)
+                resp.raise_for_status()
+                if not resp.content:
+                    raise RuntimeError("empty body")
+                # Write via a temp name so an interrupted run cannot leave a
+                # half file that later looks mirrored.
+                tmp = target.with_suffix(target.suffix + ".part")
+                tmp.write_bytes(resp.content)
+                tmp.replace(target)
+                fetched += 1
+            except (requests.RequestException, RuntimeError, OSError) as exc:
+                log.warning("Icon not mirrored (%s): %s", remote, exc)
+                failed += 1
+                continue  # keep the remote URL, it still works
+        raid["image"] = f"{ICON_ROUTE}/{name}"
+
+    log.info("Icons mirrored: %d new, %d already here, %d failed", fetched, reused, failed)
 
 
 def fetch_type_map(session: requests.Session) -> dict[str, list[str]]:
@@ -512,6 +607,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=RAIDS_API_URL, help="Raid API endpoint to read")
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Path to write the JSON payload")
+    parser.add_argument(
+        "--icon-dir",
+        default=os.environ.get("RAID_ICON_DIR", DEFAULT_ICON_DIR),
+        help="Mirror boss icons here and serve them locally ('' disables mirroring)",
+    )
     return parser.parse_args(argv)
 
 
@@ -528,6 +628,8 @@ def main(argv: list[str] | None = None) -> int:
         populate_types(raids, fetch_type_map(session))
         populate_estimators(raids, session)
         populate_max_counters(raids, fetch_max_counters(session))
+        if args.icon_dir:
+            mirror_icons(raids, session, args.icon_dir)
     for raid in raids:
         raid.pop("_slug", None)
     output_path = Path(args.output)

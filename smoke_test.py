@@ -188,6 +188,67 @@ def test_max_counter_table():
     print("OK: max counter table")
 
 
+def test_saturated_estimators_are_dropped():
+    """A pinned estimator is not a measurement and must not be published.
+
+    Tier 6 bosses come back with three quarters of their counter list at
+    96..99.5 -- and Gigantamax Machamp, the counter every guide names against
+    fighting-weak Duraludon, dead last. Publishing "74+ trainers" off that is
+    worse than publishing nothing.
+    """
+    from availableraids import _is_saturated
+
+    assert _is_saturated([73.1, 76.6, 86.9, 96.9, 98.3, 99.0, 99.2, 99.4, 99.5])
+    assert not _is_saturated([1.94, 5.13, 5.32, 5.48, 6.10, 7.58])
+    assert not _is_saturated([1.09, 1.36, 1.59, 2.43, 2.46])
+    assert _is_saturated([]), "no counters at all is not a usable estimate either"
+    print("OK: saturated estimators dropped")
+
+
+def test_icon_mirror_names_and_serving(tmp_dir=None):
+    """Mirrored icons: flattened names, and no way to escape the directory."""
+    import os
+    import tempfile
+
+    import availableraids
+    import raid as raid_mod
+
+    assert availableraids.mirrored_icon_name("pm/pm884.icon.png") == "pm_pm884.icon.png"
+    assert availableraids.mirrored_icon_name("pokemon_icon_483_00.png") == "pokemon_icon_483_00.png"
+    assert "/" not in availableraids.mirrored_icon_name("a/b/../c.png")
+
+    directory = tempfile.mkdtemp()
+    with open(os.path.join(directory, "pm_pm884.icon.png"), "wb") as fp:
+        fp.write(b"\x89PNG\r\n\x1a\nstub")
+    with open(os.path.join(directory, "secret.json"), "w") as fp:
+        fp.write("{}")
+
+    original = raid_mod.ICON_DIR
+    raid_mod.ICON_DIR = directory
+    try:
+        captured = {}
+
+        def start_response(status, headers):
+            captured["status"] = status
+            captured["headers"] = dict(headers)
+
+        body = b"".join(raid_mod.icon_response(start_response, "pm_pm884.icon.png"))
+        assert captured["status"] == "200 OK"
+        assert captured["headers"]["Content-Type"] == "image/png"
+        assert body.startswith(b"\x89PNG")
+
+        # Everything that is not exactly a mirrored name is a 404, including
+        # the traversal shapes a proxy might pass through unnormalised.
+        for bad in ("../secret.json", "..%2fsecret.json", "secret.json",
+                    "sub/pm_pm884.icon.png", "pm_pm884.icon.png/../secret.json",
+                    "", "nope.png"):
+            raid_mod.icon_response(start_response, bad)
+            assert captured["status"] == "404 Not Found", f"{bad!r} was not rejected"
+    finally:
+        raid_mod.ICON_DIR = original
+    print("OK: icon mirror names and serving")
+
+
 def test_max_battles_are_separated():
     """A Max Battle must never reach the raid list, and vice versa.
 
@@ -367,7 +428,8 @@ if __name__ == "__main__":
     tests = [test_imports, test_wsgi_app, test_type_effectiveness,
              test_format_difficulty, test_humanize_tier, test_display_name,
              test_is_current_tier, test_icon_map_picks_the_richest_chunk,
-             test_max_counter_table, test_max_battles_are_separated,
+             test_max_counter_table, test_saturated_estimators_are_dropped,
+             test_icon_mirror_names_and_serving, test_max_battles_are_separated,
              test_build_raid_entries, test_format_local,
              test_api_effectiveness, test_api_raids, test_watchdog]
     failed = 0

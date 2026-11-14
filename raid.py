@@ -635,6 +635,37 @@ API_HELP = {
 }
 
 
+ICON_DIR = os.environ.get("RAID_ICON_DIR") or "/data/icons"
+
+# Deliberately strict rather than clever: the mirror writes exactly this shape
+# (availableraids.mirrored_icon_name), so anything else is not ours. No
+# os.path.join with user input, no normalisation to reason about, no way to
+# express a traversal in the first place.
+ICON_NAME_RE = re.compile(r"\A[A-Za-z0-9._-]+\.png\Z")
+
+
+def icon_response(start_response, name):
+    """Serve a mirrored boss icon from the data volume."""
+    if not ICON_NAME_RE.match(name or "") or ".." in name:
+        start_response('404 Not Found', [('Content-Type', 'text/plain; charset=utf-8')])
+        return [b'not found']
+    path = os.path.join(ICON_DIR, name)
+    try:
+        with open(path, 'rb') as fp:
+            blob = fp.read()
+    except OSError:
+        start_response('404 Not Found', [('Content-Type', 'text/plain; charset=utf-8')])
+        return [b'not found']
+    start_response('200 OK', [
+        ('Content-Type', 'image/png'),
+        ('Content-Length', str(len(blob))),
+        # The filename encodes the asset, and Niantic does not reuse one for
+        # different artwork, so this can be cached hard.
+        ('Cache-Control', 'public, max-age=2592000, immutable'),
+    ])
+    return [blob]
+
+
 def _json_response(start_response, payload, status='200 OK'):
     encoded = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     start_response(status, [
@@ -701,6 +732,8 @@ def application(environ, start_response):
     if path_info == 'api' or path_info.startswith('api/'):
         api_parts = [p for p in path_info.split('/') if p][1:]
         return api_response(start_response, api_parts, params)
+    if path_info.startswith('icons/'):
+        return icon_response(start_response, path_info[len('icons/'):])
     path_parts = [normalize_type(part) for part in path_info.split('/') if part]
     raid_type1 = path_parts[0] if path_parts else ''
     raid_type2 = path_parts[1] if len(path_parts) > 1 else ''
