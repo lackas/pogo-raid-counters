@@ -799,7 +799,9 @@ def main(argv: list[str] | None = None) -> int:
                         [e for e in species if e.get("image")][: args.pvp_icon_budget],
                         session, args.icon_dir,
                     )
-            except Exception as exc:  # noqa: BLE001 - never fail the raid run
+            # Deliberately broad: the raid page is the primary product and
+            # must not fail because the calculator's data could not be built.
+            except Exception as exc:
                 log.warning("PvP species dump skipped: %s", exc)
                 species = []
 

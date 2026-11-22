@@ -784,8 +784,8 @@ def pvp_response(start_response, path_parts, environ=None, params=None):
             ('Location', target),
             # A year: it is a display preference, not a session.
             ('Set-Cookie',
-             f"{pvp.LANG_COOKIE}={lang}; Path=/; Max-Age=31536000; "
-             "SameSite=Lax"),
+             (f"{pvp.LANG_COOKIE}={lang}; Path=/; Max-Age=31536000; "
+              "SameSite=Lax")),
         ])
         return [b'']
 
@@ -892,8 +892,8 @@ def application(environ, start_response):
         '</head>',
         '<body>',
         '<main class="container">',
-        '<nav><ul><li><strong>Raid Helper</strong></li></ul>'
-        '<ul><li><a href="/pvp">PvP-Rechner</a></li></ul></nav>'
+        ('<nav><ul><li><strong>Raid Helper</strong></li></ul>'
+         '<ul><li><a href="/pvp">PvP-Rechner</a></li></ul></nav>')
     ]
 
     raid_list = load_available_raids()

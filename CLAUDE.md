@@ -91,7 +91,18 @@ RAID_DATA_PATH=./available_raids.json gunicorn -w 2 -b 0.0.0.0:8000 raid:applica
 
 ## Linting
 
-Ruff via GitHub Actions on push/PR to main. Run locally: `ruff check .`
+Ruff via GitHub Actions on push/PR to main. The workflow **pins a version**
+(`.github/workflows/*.yml`, `astral-sh/ruff-action@v3` -> `version:`), and the
+host has no ruff, so run it in Docker **with that same tag**:
+
+```bash
+docker run --rm -v "$PWD":/io -w /io ghcr.io/astral-sh/ruff:0.16.4 check .
+```
+
+Do not use `:latest` for this. It resolved to 0.15.12 once while CI ran
+0.16.4; the local run passed and CI then failed on eight findings the older
+version does not report (ISC004, I001 in function-level imports, PLW1510).
+Bump the tag here whenever the workflow's pin changes.
 
 ## Environment Variables
 

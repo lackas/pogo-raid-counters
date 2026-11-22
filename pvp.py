@@ -798,8 +798,8 @@ def render_pvp_page(index, slug, iv, lang=DEFAULT_LANG):
         # A plain link, not a JS toggle: the server sets the cookie and sends
         # you back, so it works on first paint with no flash of the other
         # language and without JavaScript.
-        f'<p class="pvp-lang"><a href="?lang={other}" rel="nofollow">'
-        f'{"English names" if other == "en" else "Deutsche Namen"}</a></p>',
+        (f'<p class="pvp-lang"><a href="?lang={other}" rel="nofollow">'
+         f'{"English names" if other == "en" else "Deutsche Namen"}</a></p>'),
     ]
 
     if not index:

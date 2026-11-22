@@ -511,6 +511,7 @@ def test_pvp_preevo_cp():
 def test_pvp_search_and_family(tmp_dir=None):
     import os
     import tempfile
+
     import pvp
     with tempfile.TemporaryDirectory() as tmp:
         index = pvp.load_pokemon(_pvp_fixture(tmp))
@@ -558,6 +559,7 @@ def test_pvp_styles_are_reachable():
     import os
     import re
     import tempfile
+
     import pvp
     with tempfile.TemporaryDirectory() as tmp:
         index = pvp.load_pokemon(_pvp_fixture(tmp))
@@ -615,6 +617,7 @@ def test_pvp_script_parses():
     import shutil
     import subprocess
     import tempfile
+
     import pvp
     node = shutil.which("node")
     if not node:
@@ -624,7 +627,8 @@ def test_pvp_script_parses():
         handle.write(pvp.PVP_SCRIPT)
         path = handle.name
     try:
-        result = subprocess.run([node, "--check", path], capture_output=True, text=True)
+        result = subprocess.run([node, "--check", path], capture_output=True,
+                                text=True, check=False)
         assert result.returncode == 0, f"page script does not parse:\n{result.stderr}"
     finally:
         os.unlink(path)
@@ -640,6 +644,7 @@ def test_pvp_script_guards_missing_dom():
     .pvp-dots row or the results box has to be followed by a null guard.
     """
     import re
+
     import pvp
     script = pvp.PVP_SCRIPT
     for pattern, guard in (
@@ -657,6 +662,7 @@ def test_pvp_language():
     """German is the default, English is reachable, and both names are searched."""
     import os
     import tempfile
+
     import pvp
     from raid import application
     with tempfile.TemporaryDirectory() as tmp:
@@ -727,6 +733,7 @@ def test_pvp_routes():
     import json
     import os
     import tempfile
+
     from raid import application
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["PVP_DATA_PATH"] = _pvp_fixture(tmp)
