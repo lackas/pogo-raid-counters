@@ -580,9 +580,6 @@ PVP_SCRIPT = r"""
   // Rows cover the selected stage and everything above it. There is no way
   // to un-evolve, so a Swampert page listing Mudkip's rank is noise.
   var USABLE = FAMILY.slice(D.targetIndex || 0);
-  // The stages below it still matter, but only as a ceiling: this is what
-  // the Pokemon in your bag may show *before* you evolve it.
-  var EARLIER = FAMILY.slice(0, D.targetIndex || 0);
 
   // Little Cup takes Pokemon that can still evolve and never have -- so the
   // base form of a line that has one, and nothing else. Swampert was being
@@ -599,7 +596,7 @@ PVP_SCRIPT = r"""
     var key = (iv[0] << 8) | (iv[1] << 4) | iv[2];
     var out = [], matches = [];
     LEAGUES.forEach(function (lg) {
-      var rows = [], targetLevel = null;
+      var rows = [], anchorLevel = null;
       // Detail tables show the whole line again: there is room once you are
       // scrolling, and seeing where the earlier stages land is useful
       // context. The summary above stays limited to the selected stage and
@@ -615,7 +612,13 @@ PVP_SCRIPT = r"""
                          lv: t.lv[key], cp: t.cp[key], isFinal: isFinal,
                          cls: rankClass(t.rank[key], t.count) });
         }
-        if (mon.slug === TARGET && fits) targetLevel = t.lv[key];
+        // The note is anchored on the stage you would actually battle with,
+        // not on the one that happens to be selected. On a Bulbasaur page
+        // that is Venusaur -- and "how far may I power this Bulbasaur up"
+        // is exactly the question that page cannot otherwise answer, because
+        // the level it prints belongs to the evolution, not to the Pokemon
+        // in your bag.
+        if (isFinal && fits) anchorLevel = t.lv[key];
         var name = mon.slug === TARGET
           ? '<span class="pvp-target">' + mon.name + "</span>"
           : '<a href="/pvp/' + mon.slug + "/" + iv.join("-") + '">' + mon.name + "</a>";
@@ -633,16 +636,17 @@ PVP_SCRIPT = r"""
       // The point of the whole page: at the level the SELECTED form needs,
       // what CP does each earlier stage show? That is the number you watch
       // while powering up, before the evolution pushes you over the cap.
-      // The number you actually watch while powering up: how far the
-      // pre-evolution in your bag may go before evolving busts the cap.
+      // The number you actually watch while powering up: how far every
+      // earlier stage may go before evolving busts the cap.
       var note = "";
-      if (targetLevel !== null && EARLIER.length) {
-        var parts = EARLIER.map(function (mon) {
-          var c = cpAtLevel(mon, iv, targetLevel);
+      var others = FAMILY.filter(function (mon) { return mon.slug !== FINAL; });
+      if (anchorLevel !== null && others.length) {
+        var parts = others.map(function (mon) {
+          var c = cpAtLevel(mon, iv, anchorLevel);
           return mon.name + " " + (c === null ? "?" : c) + " " + T.cp;
         });
         note = '<p class="pvp-note">' + T.ceiling + parts.join(" · ") +
-          " <small>(L" + fmtLevel(targetLevel) + ")</small></p>";
+          " <small>(L" + fmtLevel(anchorLevel) + ")</small></p>";
       }
 
       if (!rows.length) return;   // nobody in the line may enter this cup

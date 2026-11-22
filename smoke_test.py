@@ -794,10 +794,15 @@ def test_pvp_no_downgrade():
                 f"{slug}: targetIndex {payload['targetIndex']}, want {expected_index}"
         # The script slices on that index, so the contract is: everything from
         # targetIndex on is usable, everything before it is only a ceiling.
-        assert "FAMILY.slice(D.targetIndex" in script
-        assert "FAMILY.slice(0, D.targetIndex" in script
-        # Detail tables walk the whole line; only the summary is sliced.
-        assert "FAMILY.forEach(function (mon) {\n        if (!eligible(mon, lg))" in script
+        # The summary slices on that index; the detail tables walk the whole
+        # line. The ceiling note is anchored on the final stage instead, so
+        # it works on a base-form page too -- that is where it is needed
+        # most, because the level shown there belongs to the evolution.
+        assert "FAMILY.slice(D.targetIndex" in script, "summary is not sliced"
+        assert "FAMILY.forEach(function (mon) {\n        if (!eligible(mon, lg))" in script, \
+            "detail tables no longer walk the whole family"
+        assert "if (isFinal && fits) anchorLevel" in script, \
+            "ceiling note is not anchored on the final stage"
     print("OK: pvp no downgrade")
 
 
