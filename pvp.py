@@ -524,13 +524,13 @@ PVP_SCRIPT = r"""
     form: "Form", level: "Level", cp: "CP", rank: "Rank", prod: "Stat product",
     nofit: "over the cap, even at level 1",
     ceiling: "When evolving: ",
-    empty: "IV %s: nothing in the top 5 % of any league. Full numbers below."
+    empty: "IV %s: nothing in the top 100 of any league. Full numbers below."
   } : {
     cap: " <small>(max. %s WP)</small>", nocap: " <small>(ohne Limit)</small>",
     form: "Form", level: "Level", cp: "WP", rank: "Rang", prod: "Statwert",
     nofit: "über dem Limit, auch auf Level 1",
     ceiling: "Beim Entwickeln: ",
-    empty: "IV %s: nichts in den besten 5 % einer Liga. Vollständige Zahlen unten."
+    empty: "IV %s: nichts in den besten 100 einer Liga. Vollständige Zahlen unten."
   };
 
   // The species list is ~1660 entries and identical on every page, so it is
@@ -595,9 +595,10 @@ PVP_SCRIPT = r"""
 
   function fmtLevel(v) { return v % 1 ? v.toFixed(1) : String(v); }
 
-  // "Worth keeping" cut-off. Top 5% of 4096 is rank 205 -- generous enough
-  // that a decent spread shows up, tight enough that the summary stays short.
-  var MATCH_SHARE = 0.05;
+  // Hard cut-off for the summary. A rank in the four digits is not a
+  // highlight, not even for the final stage -- it is still in the table
+  // below, which is where a bad result belongs.
+  var MATCH_RANK = 100;
   // The stage you actually battle with is the last one in the line, so its
   // numbers are always shown even when its rank is unremarkable -- looking up
   // Mudkip almost always means wanting the Swampert values. Little Cup is the
@@ -634,7 +635,7 @@ PVP_SCRIPT = r"""
         var fits = t.sp[key] > 0;
         var isFinal = mon.slug === FINAL;
         var usable = USABLE.indexOf(mon) >= 0;
-        if (fits && usable && (isFinal || t.rank[key] <= t.count * MATCH_SHARE)) {
+        if (fits && usable && t.rank[key] <= MATCH_RANK) {
           matches.push({ mon: mon, lg: lg, rank: t.rank[key], count: t.count,
                          lv: t.lv[key], cp: t.cp[key], isFinal: isFinal,
                          cls: rankClass(t.rank[key], t.count) });
