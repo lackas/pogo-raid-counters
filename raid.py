@@ -11,6 +11,8 @@ from urllib.parse import parse_qs
 from wsgiref.handlers import CGIHandler
 from zoneinfo import ZoneInfo
 
+import pvp
+
 # List of all Pokémon Go types
 pokemon_types = [
     "normal", "fire", "water", "electric", "grass", "ice", "fighting",
@@ -682,6 +684,8 @@ def api_response(start_response, path_parts, params):
     if not path_parts:
         return _json_response(start_response, API_HELP)
     section = path_parts[0]
+    if section == 'pvp' and len(path_parts) > 1 and path_parts[1] == 'index':
+        return pvp_index_response(start_response)
     if section in ('raids', 'maxbattles'):
         state = (params.get('state', [''])[0] or '').strip().lower() or None
         if state and state not in {'active', 'upcoming'}:
@@ -724,6 +728,64 @@ def api_response(start_response, path_parts, params):
     )
 
 
+PVP_HEAD = (
+    '<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+    '<title>PvP-Rechner – Pokémon Go</title>'
+    '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">'
+)
+
+
+def pvp_index_response(start_response):
+    """Species list for the search box: slug, name, icon. Cacheable.
+
+    Served apart from the page because it is the same ~1660 entries every
+    time; inlining it would re-send a hundred kilobytes on every click
+    through an evolution line.
+    """
+    index = pvp.load_pokemon()
+    payload = {
+        "pokemon": [
+            [entry["slug"], entry["name"], entry.get("image") or ""]
+            for entry in sorted(index.values(), key=lambda e: e.get("name") or "")
+        ]
+    }
+    encoded = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    start_response('200 OK', [
+        ('Content-Type', 'application/json; charset=utf-8'),
+        ('Content-Length', str(len(encoded))),
+        # Rebuilt nightly at most, and a stale list only misses a new species.
+        ('Cache-Control', 'public, max-age=21600'),
+    ])
+    return [encoded]
+
+
+def pvp_response(start_response, path_parts):
+    """/pvp, /pvp/<slug> and /pvp/<slug>/<a>-<d>-<s>."""
+    slug = path_parts[0] if path_parts else ''
+    iv = pvp.parse_iv_path(path_parts[1]) if len(path_parts) > 1 else (0, 0, 0)
+    index = pvp.load_pokemon()
+    body, script = pvp.render_pvp_page(index, slug, iv)
+    page = (
+        PVP_HEAD
+        + '<style>' + pvp.PVP_STYLES + '\n        ' + TYPE_BADGE_STYLES + '</style>'
+        + '</head><body><main class="container">'
+        + '<nav><ul><li><strong>PvP-Rechner</strong></li></ul>'
+        + '<ul><li><a href="/">Raids</a></li></ul></nav>'
+        + body
+        + '</main>' + script + '</body></html>'
+    )
+    encoded = page.encode('utf-8')
+    start_response('200 OK', [
+        ('Content-Type', 'text/html; charset=utf-8'),
+        ('Content-Length', str(len(encoded))),
+        ('X-Content-Type-Options', 'nosniff'),
+        ('X-Frame-Options', 'DENY'),
+        ('Referrer-Policy', 'strict-origin-when-cross-origin'),
+    ])
+    return [encoded]
+
+
 def application(environ, start_response):
     params = parse_qs(environ.get('QUERY_STRING', ''), keep_blank_values=True)
     path_info = environ.get('PATH_INFO', '').strip('/')
@@ -734,6 +796,9 @@ def application(environ, start_response):
         return api_response(start_response, api_parts, params)
     if path_info.startswith('icons/'):
         return icon_response(start_response, path_info[len('icons/'):])
+    if path_info == 'pvp' or path_info.startswith('pvp/'):
+        pvp_parts = [p for p in path_info.split('/') if p][1:]
+        return pvp_response(start_response, pvp_parts)
     path_parts = [normalize_type(part) for part in path_info.split('/') if part]
     raid_type1 = path_parts[0] if path_parts else ''
     raid_type2 = path_parts[1] if len(path_parts) > 1 else ''
@@ -792,7 +857,9 @@ def application(environ, start_response):
         '    </style>',
         '</head>',
         '<body>',
-        '<main class="container">'
+        '<main class="container">',
+        '<nav><ul><li><strong>Raid Helper</strong></li></ul>'
+        '<ul><li><a href="/pvp">PvP-Rechner</a></li></ul></nav>'
     ]
 
     raid_list = load_available_raids()

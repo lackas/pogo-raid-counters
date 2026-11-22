@@ -458,6 +458,8 @@ def populate_max_counters(raids: list[dict], table: dict[str, dict]) -> None:
 # Where mirrored icons live, and the path the app serves them under. They are
 # kept next to the data file so one volume holds everything stateful.
 DEFAULT_ICON_DIR = "/data/icons"
+DEFAULT_PVP_OUTPUT = "/data/pvp_pokemon.json"
+PVP_ICON_BUDGET = 400
 ICON_ROUTE = "/icons"
 
 # A mirrored name must survive being put in a URL and a filename, and
@@ -521,20 +523,29 @@ def mirror_icons(raids: list[dict], session: requests.Session, icon_dir: str) ->
     log.info("Icons mirrored: %d new, %d already here, %d failed", fetched, reused, failed)
 
 
-def fetch_type_map(session: requests.Session) -> dict[str, list[str]]:
+def fetch_pokedex(session: requests.Session) -> dict:
+    """The /pokemon blob, or {} on failure.
+
+    Split out from fetch_type_map because two consumers need it now: boss
+    types and the PvP species dump. It is ~415 KB gzipped and answers in well
+    under a second, but fetching it twice per run would still be sloppy.
+    """
+    try:
+        return fetch_json(POKEDEX_API_URL, session)
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("Pokedex unavailable this run: %s", exc)
+        return {}
+
+
+def type_map_from_pokedex(data: dict) -> dict[str, list[str]]:
     """Boss types straight from the pokedex endpoint.
 
     This replaced per-boss PokeAPI lookups, which needed a hand-maintained
     alias table and still 404'd on forms PokeAPI names differently (the
     ZAMAZENTA_HERO_FORM warnings in the old logs).
     """
-    try:
-        data = fetch_json(POKEDEX_API_URL, session)
-    except (requests.RequestException, ValueError) as exc:
-        log.warning("No boss types this run: %s", exc)
-        return {}
     type_map: dict[str, list[str]] = {}
-    for mon in data.get("pokemon") or []:
+    for mon in (data or {}).get("pokemon") or []:
         pokemon_id = mon.get("pokemonId")
         if not pokemon_id:
             continue
@@ -546,6 +557,10 @@ def fetch_type_map(session: requests.Session) -> dict[str, list[str]]:
     return type_map
 
 
+def fetch_type_map(session: requests.Session) -> dict[str, list[str]]:
+    return type_map_from_pokedex(fetch_pokedex(session))
+
+
 def populate_types(raids: list[dict], type_map: dict[str, list[str]]) -> None:
     for raid in raids:
         slug = raid.get("_slug") or ""
@@ -554,6 +569,60 @@ def populate_types(raids: list[dict], type_map: dict[str, list[str]]) -> None:
             raid["types"] = types
         else:
             log.warning("No types for %s", slug)
+
+
+# Schattenformen haben identische Basiswerte -- fuer den IV-Rang waeren sie
+# exakte Dubletten und wuerden die Suche nur zumuellen. Der Kampfbonus der
+# Schattenform wirkt im Kampf, nicht auf die Werte.
+PVP_SKIP_SUFFIXES = ("_SHADOW_FORM",)
+
+
+def build_pokemon_index(data: dict, icon_map: dict[str, str]) -> list[dict]:
+    """Every species with base stats, for the PvP IV calculator.
+
+    Deliberately a flat list rather than the raid shape: this one is keyed by
+    species, carries no schedule and never goes stale in the way raid data
+    does. `parent` and `family` are what lets the page walk an evolution line,
+    which is the whole point -- powering a Pawniard to its own cap and then
+    evolving it blows past 1500 as a Kingambit.
+    """
+    entries: list[dict] = []
+    for mon in (data or {}).get("pokemon") or []:
+        pokemon_id = mon.get("pokemonId")
+        stats = mon.get("stats") or {}
+        attack = stats.get("baseAttack")
+        defense = stats.get("baseDefense")
+        stamina = stats.get("baseStamina")
+        if not pokemon_id or not (attack and defense and stamina):
+            continue
+        if any(pokemon_id.endswith(suffix) for suffix in PVP_SKIP_SUFFIXES):
+            continue
+        entries.append({
+            "id": pokemon_id,
+            "slug": re.sub(r"[^a-z0-9]+", "-", pokemon_id.lower()).strip("-"),
+            "name": display_name(pokemon_id),
+            "atk": attack,
+            "def": defense,
+            "sta": stamina,
+            "types": [
+                value.removeprefix("POKEMON_TYPE_").lower()
+                for value in (mon.get("type"), mon.get("type2"))
+                if value
+            ],
+            "parent": mon.get("parentPokemonId"),
+            "family": mon.get("familyId"),
+            "image": icon_url(pokemon_id, icon_map),
+        })
+    entries.sort(key=lambda entry: entry["name"])
+    return entries
+
+
+def write_pokemon_index(path: Path, entries: list[dict]) -> None:
+    payload = {
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "pokemon": entries,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def fetch_estimator(slug: str, tier_raw: str, session: requests.Session) -> float | None:
@@ -612,6 +681,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("RAID_ICON_DIR", DEFAULT_ICON_DIR),
         help="Mirror boss icons here and serve them locally ('' disables mirroring)",
     )
+    parser.add_argument(
+        "--pvp-output",
+        default=os.environ.get("PVP_DATA_PATH", DEFAULT_PVP_OUTPUT),
+        help="Path for the PvP species dump ('' skips it)",
+    )
+    parser.add_argument(
+        "--pvp-icon-budget",
+        type=int,
+        default=PVP_ICON_BUDGET,
+        help="Max species icons to mirror per run (they fill in over a few nights)",
+    )
     return parser.parse_args(argv)
 
 
@@ -619,22 +699,49 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     with create_session() as session:
         blob = fetch_json(args.url, session)
-        raids = build_raid_entries(blob, fetch_icon_map(session))
+        icon_map = fetch_icon_map(session)
+        raids = build_raid_entries(blob, icon_map)
         if not raids:
             # Writing an empty file would quietly blank the site; leaving the
             # previous one in place lets the watchdog notice the staleness.
             print("No current raids found, keeping the previous data")
             return 1
-        populate_types(raids, fetch_type_map(session))
+        pokedex = fetch_pokedex(session)
+        populate_types(raids, type_map_from_pokedex(pokedex))
         populate_estimators(raids, session)
         populate_max_counters(raids, fetch_max_counters(session))
         if args.icon_dir:
             mirror_icons(raids, session, args.icon_dir)
+
+        # The PvP dump reuses the pokedex blob and the icon table that the
+        # raid side already fetched. It must never be able to fail the run:
+        # the raid page is the primary product, the calculator is extra.
+        species: list[dict] = []
+        if args.pvp_output:
+            try:
+                species = build_pokemon_index(pokedex, icon_map)
+                if args.icon_dir and species:
+                    # ~1660 species against ~75 raid bosses, so this is
+                    # budgeted: a few hundred per night, and after a week the
+                    # whole set is local. Until then an unmirrored entry keeps
+                    # its remote URL and still renders.
+                    mirror_icons(
+                        [e for e in species if e.get("image")][: args.pvp_icon_budget],
+                        session, args.icon_dir,
+                    )
+            except Exception as exc:  # noqa: BLE001 - never fail the raid run
+                log.warning("PvP species dump skipped: %s", exc)
+                species = []
+
     for raid in raids:
         raid.pop("_slug", None)
     output_path = Path(args.output)
     write_output(output_path, raids)
     print(f"Wrote {len(raids)} raids to {output_path}")
+    if species:
+        pvp_path = Path(args.pvp_output)
+        write_pokemon_index(pvp_path, species)
+        print(f"Wrote {len(species)} species to {pvp_path}")
     return 0
 
 

@@ -26,6 +26,48 @@ Read-only JSON, no auth (all data is public game data — a token would be frict
 
 Implemented in `raid.py`: `build_raids_payload()`, `build_effectiveness()`, `api_response()` (routed from `application()` before the type-path handling). Covered by `smoke_test.py::test_api_raids` / `test_api_effectiveness`.
 
+## PvP IV Calculator (`pvp.py`, `/pvp`)
+
+A second, independent tool on the same app: given a species and an IV spread,
+where does it rank in Little / Great / Ultra / Master, and what CP do its
+pre-evolutions show on the way there.
+
+- **Routes**: `/pvp`, `/pvp/<slug>`, `/pvp/<slug>/<a>-<d>-<s>`. The IV path is
+  what makes a result bookmarkable, and the page rewrites it with
+  `history.replaceState` as dots are clicked, so the URL in the bar is always
+  the current spread. A malformed IV segment falls back to `0-0-0` rather than
+  404 — a hand-edited bookmark should still land somewhere useful.
+- **All maths runs in the browser.** Rank tables depend only on base stats and
+  the CP cap, never on the live meta, so they are computed once per page load
+  (12 tables = 3 family members x 4 leagues) and then only indexed into. An IV
+  click must repaint with no round trip. `pvp.py` holds the same algorithm in
+  Python for the tests and would serve an API if one is ever wanted.
+- **The CPM table is hardcoded** in `pvp.py`, verified against the published
+  anchors (L1 0.094, L10 0.4225, L20 0.5974, L30 0.7317, L40 0.7903, L50
+  0.8403, L51 0.84530). It is a game constant that changes at most once a
+  year; fetching it would add a failure mode for nothing.
+- **Why pre-evolution CP is the point.** Powering a Pawniard to *its own*
+  Great League ceiling (L50, CP 1466 at 0/15/13) and then evolving gives a
+  Kingambit at CP 3827. The binding level is the final form's — L15.5, where
+  the Pawniard in your bag still reads CP 574. That number, under each league
+  table, is the one you watch while powering up.
+- **Species data** comes from the same Pokebattler `/pokemon` blob the raid
+  side already fetches (`stats.baseAttack/baseDefense/baseStamina`), dumped to
+  `/data/pvp_pokemon.json` by `availableraids.py --pvp-output`. Shadow forms
+  are skipped: their base stats are identical, so they would be exact
+  duplicates in the rank table and only clutter the search.
+- **Evolution lines** are walked through `parentPokemonId`, not `familyId`
+  alone, because a family can branch (Eevee). `family_chain()` returns one
+  line; everything else in the family is offered as links via
+  `family_members()`.
+- **The species list is served separately** at `/api/pvp/index` with a 6-hour
+  cache, not inlined. It is ~1660 entries / 64 KB and identical on every page;
+  inlining it would re-send that on every click through an evolution line.
+- **Icon mirroring is budgeted** (`--pvp-icon-budget`, default 400 per run).
+  The raid side mirrors ~75 bosses; this one wants ~1660. A few hundred a
+  night fills the set in under a week, and an unmirrored entry keeps its
+  remote URL meanwhile, so nothing is ever blank.
+
 ## Infrastructure
 
 - Docker with gunicorn (2 workers, port 8000)
@@ -56,6 +98,7 @@ Ruff via GitHub Actions on push/PR to main. Run locally: `ruff check .`
 - `RAID_DATA_PATH` — path to raid data JSON (default: `/data/available_raids.json`)
 - `RAID_SOURCE_TZ` — timezone for parsing raid schedules (default: `America/Los_Angeles`)
 - `RAID_ICON_DIR` — where mirrored boss icons live and are served from (default: `/data/icons`); `--icon-dir ''` disables mirroring
+- `PVP_DATA_PATH` — path to the PvP species dump (default: `/data/pvp_pokemon.json`)
 
 ## Key Design Decisions
 

@@ -14,7 +14,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY raid.py availableraids.py smoke_test.py ./
+COPY raid.py availableraids.py pvp.py smoke_test.py ./
 RUN python smoke_test.py && rm smoke_test.py
 COPY cron ./cron/
 

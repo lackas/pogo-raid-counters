@@ -424,6 +424,179 @@ def test_watchdog():
     print("OK: watchdog endpoint")
 
 
+def _pvp_fixture(tmp_path):
+    """A three-stage family plus an unrelated species, written as the real dump."""
+    import json
+    payload = {"pokemon": [
+        {"id": "PAWNIARD", "slug": "pawniard", "name": "Pawniard",
+         "atk": 154, "def": 114, "sta": 128, "types": ["dark", "steel"],
+         "parent": None, "family": "FAMILY_PAWNIARD", "image": "/icons/a.png"},
+        {"id": "BISHARP", "slug": "bisharp", "name": "Bisharp",
+         "atk": 232, "def": 176, "sta": 163, "types": ["dark", "steel"],
+         "parent": "PAWNIARD", "family": "FAMILY_PAWNIARD", "image": "/icons/b.png"},
+        {"id": "KINGAMBIT", "slug": "kingambit", "name": "Kingambit",
+         "atk": 238, "def": 203, "sta": 225, "types": ["dark", "steel"],
+         "parent": "BISHARP", "family": "FAMILY_PAWNIARD", "image": "/icons/c.png"},
+        {"id": "AZUMARILL", "slug": "azumarill", "name": "Azumarill",
+         "atk": 112, "def": 152, "sta": 225, "types": ["water", "fairy"],
+         "parent": "MARILL", "family": "FAMILY_MARILL", "image": None},
+    ]}
+    path = tmp_path + "/pvp_pokemon.json"
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    return path
+
+
+def test_pvp_rank_tables():
+    """The published rank-1 spreads, which are the whole contract of the page.
+
+    These four numbers are independently documented (GO Hub's Kingambit
+    analysis, DittoBase), so a change here means our CPM table or CP formula
+    drifted, not that the meta moved.
+    """
+    import pvp
+    expected = {
+        500: ((0, 14, 7), 5.5, 500),
+        1500: ((0, 15, 13), 15.5, 1499),
+        2500: ((0, 15, 10), 26.0, 2499),
+        0: ((15, 15, 15), 50.0, 4086),
+    }
+    for cap, (ivs, level, cp_value) in expected.items():
+        rows = pvp.rank_table(238, 203, 225, cap)
+        assert len(rows) == 4096, f"cap {cap}: expected 4096 spreads, got {len(rows)}"
+        _, iv_a, iv_d, iv_s, got_level, got_cp = rows[0]
+        assert (iv_a, iv_d, iv_s) == ivs, f"cap {cap}: rank 1 is {(iv_a, iv_d, iv_s)}, want {ivs}"
+        assert got_level == level, f"cap {cap}: level {got_level}, want {level}"
+        assert got_cp == cp_value, f"cap {cap}: CP {got_cp}, want {cp_value}"
+
+    # A hundo is a bad Great League spread -- the single most useful thing the
+    # page tells people, so it is worth pinning.
+    rank, _row, share = pvp.rank_of(pvp.rank_table(238, 203, 225, 1500), 15, 15, 15)
+    assert rank == 387, f"hundo should rank 387 in Great, got {rank}"
+    assert 0.97 < share < 0.971, f"hundo stat product share off: {share}"
+    print("OK: pvp rank tables")
+
+
+def test_pvp_cpm_anchors():
+    import pvp
+    anchors = {1: 0.094, 10: 0.4225, 20: 0.5974, 30: 0.7317, 40: 0.7903, 50: 0.8403}
+    for level, expected in anchors.items():
+        got = pvp.CPM[level]
+        assert abs(got - expected) < 5e-5, f"CPM L{level} is {got}, want ~{expected}"
+    assert len(pvp.CPM) == 101, f"expected 101 half levels to 51, got {len(pvp.CPM)}"
+    print("OK: pvp cpm anchors")
+
+
+def test_pvp_preevo_cp():
+    """The reason the page exists: a pre-evolution powered to its own cap busts
+    the cap after evolving, so the binding level is the final form's."""
+    import pvp
+    iv = (0, 15, 13)
+    final = pvp.rank_of(pvp.rank_table(238, 203, 225, 1500), *iv)[1]
+    assert final[4] == 15.5
+    # At the level Kingambit needs, Pawniard still shows a small CP ...
+    early = pvp.combat_power(154, 114, 128, *iv, pvp.CPM[final[4]])
+    assert early == 574, f"Pawniard at L15.5 should be CP 574, got {early}"
+    # ... while Pawniard's own Great League ceiling would be far too high.
+    own = pvp.rank_of(pvp.rank_table(154, 114, 128, 1500), *iv)[1]
+    evolved = pvp.combat_power(238, 203, 225, *iv, pvp.CPM[own[4]])
+    assert evolved > 1500, f"evolving at Pawniard's own cap should bust 1500, got {evolved}"
+    print("OK: pvp pre-evolution CP")
+
+
+def test_pvp_search_and_family(tmp_dir=None):
+    import os
+    import tempfile
+    import pvp
+    with tempfile.TemporaryDirectory() as tmp:
+        index = pvp.load_pokemon(_pvp_fixture(tmp))
+        assert len(index) == 4, f"expected 4 species, got {len(index)}"
+
+        # Substring, and a prefix hit must outrank a mid-word one.
+        names = [hit["name"] for hit in pvp.search_pokemon(index, "sharp")]
+        assert names == ["Bisharp"], names
+        assert pvp.search_pokemon(index, "") == []
+
+        chain = [m["name"] for m in pvp.family_chain(index, index["bisharp"])]
+        assert chain == ["Pawniard", "Bisharp", "Kingambit"], chain
+        # Walking from either end gives the same line.
+        assert [m["name"] for m in pvp.family_chain(index, index["kingambit"])] == chain
+        # A species whose parent is missing from the dump must not loop or crash.
+        assert [m["name"] for m in pvp.family_chain(index, index["azumarill"])] == ["Azumarill"]
+
+        os.environ["PVP_DATA_PATH"] = "/nonexistent/pvp.json"
+        assert pvp.load_pokemon() == {}, "missing file must yield an empty index"
+        os.environ.pop("PVP_DATA_PATH")
+    print("OK: pvp search and family")
+
+
+def test_pvp_script_guards_missing_dom():
+    """/pvp without a species has no IV rows -- the script must cope.
+
+    It did not: the dot listeners were attached unconditionally, threw a
+    TypeError on the search-only page and took the search box down with them.
+    Checked structurally because the suite has no DOM; every lookup of a
+    .pvp-dots row or the results box has to be followed by a null guard.
+    """
+    import re
+    import pvp
+    script = pvp.PVP_SCRIPT
+    for pattern, guard in (
+        (r"querySelector\('\[data-slot=", r"if \(!row\) return;"),
+        (r'getElementById\("pvp-results"\)', r"if \(target\)"),
+    ):
+        for match in re.finditer(pattern, script):
+            tail = script[match.start():match.start() + 260]
+            assert re.search(guard, tail), \
+                f"unguarded DOM lookup near: {script[match.start():match.start() + 70]!r}"
+    print("OK: pvp script guards missing DOM")
+
+
+def test_pvp_routes():
+    import json
+    import os
+    import tempfile
+    from raid import application
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["PVP_DATA_PATH"] = _pvp_fixture(tmp)
+        try:
+            captured = {}
+
+            def start_response(status, headers):
+                captured["status"] = status
+                captured["headers"] = dict(headers)
+
+            def get(path):
+                body = b"".join(application(
+                    {"QUERY_STRING": "", "PATH_INFO": path, "SCRIPT_NAME": ""},
+                    start_response))
+                return captured["status"], body.decode()
+
+            status, html = get("/pvp/kingambit/0-15-13")
+            assert status == "200 OK", status
+            assert "Kingambit" in html and "Pawniard" in html, "family missing from page"
+            assert '"iv": [0, 15, 13]' in html, "IVs not handed to the page"
+            assert "Little Cup" in html and "Master League" in html, "leagues missing"
+
+            # A nonsense IV path must land on the page, not 404 a bookmark.
+            status, html = get("/pvp/kingambit/99-99-99")
+            assert status == "200 OK" and '"iv": [0, 0, 0]' in html
+
+            status, html = get("/pvp")
+            assert status == "200 OK" and "pvp-q" in html, "search box missing"
+
+            status, body = get("/api/pvp/index")
+            assert status == "200 OK", status
+            payload = json.loads(body)
+            assert len(payload["pokemon"]) == 4, payload
+            assert payload["pokemon"][0][0] == "azumarill", "index should be name-sorted"
+            assert captured["headers"]["Cache-Control"].startswith("public"), \
+                "species index must be cacheable"
+        finally:
+            os.environ.pop("PVP_DATA_PATH", None)
+    print("OK: pvp routes")
+
+
 if __name__ == "__main__":
     tests = [test_imports, test_wsgi_app, test_type_effectiveness,
              test_format_difficulty, test_humanize_tier, test_display_name,
@@ -431,7 +604,10 @@ if __name__ == "__main__":
              test_max_counter_table, test_saturated_estimators_are_dropped,
              test_icon_mirror_names_and_serving, test_max_battles_are_separated,
              test_build_raid_entries, test_format_local,
-             test_api_effectiveness, test_api_raids, test_watchdog]
+             test_api_effectiveness, test_api_raids, test_watchdog,
+             test_pvp_rank_tables, test_pvp_cpm_anchors, test_pvp_preevo_cp,
+             test_pvp_search_and_family, test_pvp_script_guards_missing_dom,
+             test_pvp_routes]
     failed = 0
     for test in tests:
         try:
