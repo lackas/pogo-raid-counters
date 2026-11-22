@@ -751,6 +751,36 @@ def test_pvp_language():
     print("OK: pvp language switch")
 
 
+def test_pvp_no_downgrade():
+    """A page shows its own stage and upwards, never the stages below it.
+
+    There is no way to un-evolve, so Swampert's page listing Mudkip's rank is
+    noise. The pre-evolutions still travel in the payload, because the page
+    needs them for the one number they are good for: the CP ceiling you have
+    to stay under before evolving.
+    """
+    import json
+    import re
+    import tempfile
+
+    import pvp
+    with tempfile.TemporaryDirectory() as tmp:
+        index = pvp.load_pokemon(_pvp_fixture(tmp))
+        for slug, expected_index in (("pawniard", 0), ("bisharp", 1), ("kingambit", 2)):
+            _body, script = pvp.render_pvp_page(index, slug, (0, 15, 13))
+            payload = json.loads(
+                re.search(r"window\.PVP_DATA = (\{.*?\});", script, re.DOTALL).group(1))
+            names = [m["name"] for m in payload["family"]]
+            assert names == ["Gladiantri", "Bisharp", "Gladimperio"], names
+            assert payload["targetIndex"] == expected_index, \
+                f"{slug}: targetIndex {payload['targetIndex']}, want {expected_index}"
+        # The script slices on that index, so the contract is: everything from
+        # targetIndex on is usable, everything before it is only a ceiling.
+        assert "FAMILY.slice(D.targetIndex" in script
+        assert "FAMILY.slice(0, D.targetIndex" in script
+    print("OK: pvp no downgrade")
+
+
 def test_pvp_routes():
     import json
     import os
@@ -813,6 +843,7 @@ if __name__ == "__main__":
              test_pvp_search_and_family, test_pvp_styles_are_reachable,
              test_pvp_script_parses,
              test_pvp_script_guards_missing_dom, test_pvp_language,
+             test_pvp_no_downgrade,
              test_pvp_routes]
     failed = 0
     for test in tests:

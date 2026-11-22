@@ -444,6 +444,18 @@ PVP_STYLES = """
         .pvp-note { font-size: 0.85rem; color: var(--pico-muted-color); margin: 0.1rem 0 0; }
         .pvp-nofit { color: var(--pico-muted-color); }
         .pvp-lang { text-align: right; margin: -0.4rem 0 0.6rem; font-size: 0.85rem; }
+        /* raid.py keeps the base .type-badge rule in its own page styles and
+           only shares the per-type colours, so this page was rendering the
+           types as plain coloured text with no padding or shape. */
+        .type-badge { display: inline-flex; align-items: center;
+            padding: 0.15rem 0.7rem; font-weight: 600; text-transform: capitalize;
+            font-size: 0.82rem; }
+        /* One pill for a dual type: rounded on the outside only, with the two
+           halves butted together. Two separate pills read as two unrelated
+           tags; this reads as the one thing it is. */
+        .pvp-types { display: inline-flex; border-radius: 999px; overflow: hidden;
+            margin-top: 0.15rem; }
+        .pvp-types .type-badge { border-radius: 0; margin: 0; }
 """
 
 
@@ -470,13 +482,13 @@ PVP_SCRIPT = r"""
     cap: " <small>(max %s CP)</small>", nocap: " <small>(no cap)</small>",
     form: "Form", level: "Level", cp: "CP", rank: "Rank", prod: "Stat product",
     nofit: "over the cap, even at level 1",
-    atLevel: "At level %s the line shows: ",
+    ceiling: "Before evolving, at most: ",
     empty: "IV %s: nothing in the top 5 % of any league. Full numbers below."
   } : {
     cap: " <small>(max. %s WP)</small>", nocap: " <small>(ohne Limit)</small>",
     form: "Form", level: "Level", cp: "WP", rank: "Rang", prod: "Statwert",
     nofit: "über dem Limit, auch auf Level 1",
-    atLevel: "Auf Level %s zeigt die Reihe: ",
+    ceiling: "Vor der Entwicklung höchstens: ",
     empty: "IV %s: nichts in den besten 5 % einer Liga. Vollständige Zahlen unten."
   };
 
@@ -551,13 +563,19 @@ PVP_SCRIPT = r"""
   // exception where an early stage is the point, and that still surfaces via
   // the ordinary top-5% rule.
   var FINAL = FAMILY.length ? FAMILY[FAMILY.length - 1].slug : null;
+  // Rows cover the selected stage and everything above it. There is no way
+  // to un-evolve, so a Swampert page listing Mudkip's rank is noise.
+  var USABLE = FAMILY.slice(D.targetIndex || 0);
+  // The stages below it still matter, but only as a ceiling: this is what
+  // the Pokemon in your bag may show *before* you evolve it.
+  var EARLIER = FAMILY.slice(0, D.targetIndex || 0);
 
   function render(iv) {
     var key = (iv[0] << 8) | (iv[1] << 4) | iv[2];
     var out = [], matches = [];
     LEAGUES.forEach(function (lg) {
       var rows = [], targetLevel = null;
-      FAMILY.forEach(function (mon) {
+      USABLE.forEach(function (mon) {
         var t = TABLES[mon.slug][lg.key];
         var fits = t.sp[key] > 0;
         var isFinal = mon.slug === FINAL;
@@ -584,14 +602,16 @@ PVP_SCRIPT = r"""
       // The point of the whole page: at the level the SELECTED form needs,
       // what CP does each earlier stage show? That is the number you watch
       // while powering up, before the evolution pushes you over the cap.
+      // The number you actually watch while powering up: how far the
+      // pre-evolution in your bag may go before evolving busts the cap.
       var note = "";
-      if (targetLevel !== null && FAMILY.length > 1) {
-        var parts = FAMILY.map(function (mon) {
+      if (targetLevel !== null && EARLIER.length) {
+        var parts = EARLIER.map(function (mon) {
           var c = cpAtLevel(mon, iv, targetLevel);
-          return mon.name + " " + (c === null ? "?" : c);
+          return mon.name + " " + (c === null ? "?" : c) + " " + T.cp;
         });
-        note = '<p class="pvp-note">' +
-          T.atLevel.replace("%s", fmtLevel(targetLevel)) + parts.join(" · ") + "</p>";
+        note = '<p class="pvp-note">' + T.ceiling + parts.join(" · ") +
+          " <small>(L" + fmtLevel(targetLevel) + ")</small></p>";
       }
 
       out.push('<section class="pvp-league"><h3><span class="pvp-pill lg-' + lg.key +
@@ -775,6 +795,12 @@ def render_pvp_page(index, slug, iv, lang=DEFAULT_LANG):
         "leagues": [
             {"key": key, "label": label, "cap": cap} for key, label, cap in LEAGUES
         ],
+        # The whole line travels, including stages below the selected one:
+        # the rows only show the selected stage and up (there is no way to
+        # un-evolve), but the pre-evolutions are still needed to work out the
+        # CP ceiling you must stay under before evolving.
+        "targetIndex": next(
+            (i for i, member in enumerate(chain) if member["slug"] == slug), 0),
         "family": [
             {
                 "slug": member["slug"], "name": named(member, lang),
@@ -817,10 +843,11 @@ def render_pvp_page(index, slug, iv, lang=DEFAULT_LANG):
         )
     else:
         image = entry.get("image") or ""
-        types = "".join(
+        badges = "".join(
             f'<span class="type-badge type-{_escape(t)}">{_escape(t)}</span>'
             for t in entry.get("types") or []
         )
+        types = f'<span class="pvp-types">{badges}</span>' if badges else ""
         # Only the chosen language is ever displayed. Someone playing the game
         # in English does not want German names alongside, and the reverse
         # holds too -- the switch picks what you see, full stop. Searching
