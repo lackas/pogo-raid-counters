@@ -701,12 +701,10 @@ PVP_SCRIPT = r"""
     shown = search(box.value);
     active = -1;
     list.innerHTML = shown.map(function (e) {
-      var primary = D.lang === "de" ? (e[3] || e[1]) : e[1];
-      var secondary = D.lang === "de" ? (e[3] && e[3] !== e[1] ? e[1] : "") : (e[3] || "");
+      // Chosen language only -- the other one is matched but never shown.
+      var label = D.lang === "de" ? (e[3] || e[1]) : e[1];
       return '<li data-slug="' + e[0] + '"><img loading="lazy" alt="" src="' +
-        (e[2] || "") + '"><span>' + primary +
-        (secondary ? ' <small class="pvp-tile-line">' + secondary + "</small>" : "") +
-        "</span></li>";
+        (e[2] || "") + '"><span>' + label + "</span></li>";
     }).join("");
   }
 
@@ -787,9 +785,9 @@ def render_pvp_page(index, slug, iv, lang=DEFAULT_LANG):
     }
 
     other = "en" if lang == "de" else "de"
-    hint = ("Pokémon suchen – Teilname genügt, deutsch oder englisch"
+    hint = ("Pokémon suchen – Teilname genügt"
             if lang == "de" else
-            "Search Pokémon – part of the name is enough, German or English")
+            "Search Pokémon – part of the name is enough")
     parts = [
         '<section class="pvp-search">',
         f'    <input type="search" id="pvp-q" autocomplete="off" placeholder="{hint}">',
@@ -823,15 +821,16 @@ def render_pvp_page(index, slug, iv, lang=DEFAULT_LANG):
             f'<span class="type-badge type-{_escape(t)}">{_escape(t)}</span>'
             for t in entry.get("types") or []
         )
+        # Only the chosen language is ever displayed. Someone playing the game
+        # in English does not want German names alongside, and the reverse
+        # holds too -- the switch picks what you see, full stop. Searching
+        # still matches both, which costs nothing and is invisible.
+        label = named(entry, lang)
         parts.append('<div class="pvp-head">')
         if image:
-            label = named(entry, lang)
-        other_label = entry["name"] if lang == "de" else (entry.get("name_de") or "")
-        second = (f'<p class="pvp-note">{_escape(other_label)}</p>'
-                  if other_label and other_label != label else "")
-        parts.append(f'    <img src="{_escape(image)}" alt="{_escape(label)}">')
+            parts.append(f'    <img src="{_escape(image)}" alt="{_escape(label)}">')
         parts.append(
-            f'    <div><h2>{_escape(label)}</h2>{second}'
+            f'    <div><h2>{_escape(label)}</h2>'
             f'<p class="pvp-note">{"Basiswerte" if lang == "de" else "Base stats"} '
             f'{entry["atk"]} / {entry["def"]} / {entry["sta"]}</p>{types}</div>'
         )

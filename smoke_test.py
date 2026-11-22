@@ -660,7 +660,9 @@ def test_pvp_script_guards_missing_dom():
 
 def test_pvp_language():
     """German is the default, English is reachable, and both names are searched."""
+    import json
     import os
+    import re
     import tempfile
 
     import pvp
@@ -718,6 +720,26 @@ def test_pvp_language():
             env["HTTP_COOKIE"] = "pvp_lang=de"
             html = b"".join(application(env, start_response)).decode()
             assert "Gladimperio" in html, "cookie must override the browser"
+
+            # One language at a time. Someone playing the game in English
+            # does not want German names alongside, and vice versa, so the
+            # other language must not leak into the page as a subtitle or a
+            # second line in the search hits. Slugs in URLs are lower case,
+            # so these checks are safely case-sensitive.
+            # Checked against the rendered body and the family payload rather
+            # than the whole page: the script carries prose comments that
+            # legitimately name Pokemon, and matching those would make this
+            # fail for the wrong reason.
+            for lang, wanted, unwanted in (("en", "Kingambit", "Gladimperio"),
+                                           ("de", "Gladimperio", "Kingambit")):
+                body, script = pvp.render_pvp_page(index, "kingambit", (0, 15, 13), lang)
+                payload = re.search(r"window\.PVP_DATA = (\{.*?\});", script, re.DOTALL)
+                names = [m["name"] for m in json.loads(payload.group(1))["family"]]
+                assert wanted in body, f"{lang}: own language missing from the page"
+                assert unwanted not in body, f"{lang}: the other language leaked in"
+                assert unwanted not in names, f"{lang}: the other language leaked into {names}"
+            # ... but matching stays bilingual, which is invisible and free.
+            assert [h["slug"] for h in pvp.search_pokemon(index, "gladimp")] == ["kingambit"]
 
             get("/pvp/kingambit/0-15-13", query="lang=en")
             assert captured["status"] == "302 Found", captured["status"]
