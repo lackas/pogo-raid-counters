@@ -534,6 +534,64 @@ def test_pvp_search_and_family(tmp_dir=None):
     print("OK: pvp search and family")
 
 
+def test_pvp_styles_are_reachable():
+    """Every class the stylesheet targets must appear in a class attribute.
+
+    The summary box was written as <div id="pvp-summary"> while the rule was
+    .pvp-summary, so the margin separating it from the league tables did
+    nothing and the sections sat flush. Dead CSS is silent, so this walks the
+    other way.
+
+    It deliberately looks only inside class="..." attributes. A first version
+    searched the whole page and passed anyway, because the script mentions
+    "pvp-summary" as an element id -- which is exactly the mistake being
+    hunted. Matching on the id would have made the test agree with the bug.
+    """
+    import os
+    import re
+    import tempfile
+    import pvp
+    with tempfile.TemporaryDirectory() as tmp:
+        index = pvp.load_pokemon(_pvp_fixture(tmp))
+        body, script = pvp.render_pvp_page(index, "kingambit", (0, 15, 13))
+        # Two separate haystacks, and the distinction is the whole point.
+        # Class attributes may come from either the body or the script. The
+        # looser "any quoted literal" fallback looks at the script ONLY, with
+        # id lookups cut out -- because <div id="pvp-summary"> and
+        # getElementById("pvp-summary") are both quoted literals that would
+        # otherwise vouch for a class no element actually carries, which is
+        # exactly the bug this test exists for.
+        literals = re.sub(
+            r"""getElementById\(\s*["'][^"']*["']\s*\)""", "", script)
+
+        used = set()
+        stems = set()
+        for value in re.findall(r"""class=["']([^"']*)""", body + script):
+            for token in value.split():
+                used.add(token)
+                # "lg-" from `class="pvp-pill lg-' + key` -- the full name is
+                # built at runtime and never appears literally.
+                if token.endswith("-"):
+                    stems.add(token)
+
+        selectors = sorted(set(re.findall(r"\.([a-z][a-z0-9-]+)\s*[,{:.]", pvp.PVP_STYLES)))
+        assert len(selectors) > 15, f"stylesheet parse looks wrong: {selectors}"
+        def reachable(name):
+            if name in used:
+                return True
+            if any(name.startswith(stem) for stem in stems):
+                return True
+            # Classes handed around as values -- rankClass() returns one,
+            # classList.toggle takes one -- appear as bare quoted literals.
+            return bool(re.search(
+                r"""["']""" + re.escape(name) + r"""["']""", literals))
+
+        dead = [name for name in selectors if not reachable(name)]
+        assert not dead, f"CSS classes no element ever carries: {dead}"
+        os.environ.pop("PVP_DATA_PATH", None)
+    print(f"OK: pvp styles reachable ({len(selectors)} classes)")
+
+
 def test_pvp_script_parses():
     """Actually parse the page script, if a JS engine is around.
 
@@ -713,7 +771,8 @@ if __name__ == "__main__":
              test_build_raid_entries, test_format_local,
              test_api_effectiveness, test_api_raids, test_watchdog,
              test_pvp_rank_tables, test_pvp_cpm_anchors, test_pvp_preevo_cp,
-             test_pvp_search_and_family, test_pvp_script_parses,
+             test_pvp_search_and_family, test_pvp_styles_are_reachable,
+             test_pvp_script_parses,
              test_pvp_script_guards_missing_dom, test_pvp_language,
              test_pvp_routes]
     failed = 0

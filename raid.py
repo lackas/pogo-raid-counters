@@ -809,6 +809,13 @@ def pvp_response(start_response, path_parts, environ=None, params=None):
         ('X-Content-Type-Options', 'nosniff'),
         ('X-Frame-Options', 'DENY'),
         ('Referrer-Policy', 'strict-origin-when-cross-origin'),
+        # The page varies by cookie and carries its own CSS and JS inline, so
+        # a heuristically cached copy is a stale *application*, not just a
+        # stale number. With no headers at all iOS Safari happily served one
+        # for long enough to make a fixed layout look unfixed. no-cache still
+        # allows a 304, it just forces the revalidation.
+        ('Cache-Control', 'no-cache'),
+        ('Vary', 'Cookie, Accept-Language'),
     ])
     return [encoded]
 

@@ -395,8 +395,9 @@ PVP_STYLES = """
             gap: 0.5rem; }
         .pvp-tile { border: 1px solid var(--pico-muted-border-color); border-left-width: 5px;
             border-radius: 0.4rem; padding: 0.5rem 0.65rem; }
+        .pvp-tile-head { display: flex; align-items: center; gap: 0.45rem; }
         .pvp-tile-rank { font-size: 1.25rem; font-weight: 700; line-height: 1.15; }
-        .pvp-tile-form { font-weight: 600; margin: 0.1rem 0 0.25rem; }
+        .pvp-tile-form { font-weight: 600; margin: 0.15rem 0 0; line-height: 1.25; }
         .pvp-tile-line { font-size: 0.8rem; color: var(--pico-muted-color); }
         .pvp-summary-empty { font-size: 0.9rem; color: var(--pico-muted-color); }
         /* One colour per league, carried by a pill and the tile's left edge.
@@ -600,12 +601,15 @@ PVP_SCRIPT = r"""
       return (a.rank / a.count) - (b.rank / b.count) || a.rank - b.rank;
     });
     var tiles = matches.slice(0, 6).map(function (m) {
+      // Rank and league pill share the first line: they are the two things
+      // being scanned for, and stacking them left a hole in every tile.
       return '<div class="pvp-tile lg-' + m.lg.key + '">' +
-        '<div class="pvp-tile-rank ' + m.cls + '">#' + m.rank + "</div>" +
+        '<div class="pvp-tile-head"><span class="pvp-tile-rank ' + m.cls + '">#' +
+        m.rank + '</span><span class="pvp-pill lg-' + m.lg.key + '">' +
+        m.lg.label + "</span></div>" +
         '<div class="pvp-tile-form">' + m.mon.name + "</div>" +
-        '<span class="pvp-pill lg-' + m.lg.key + '">' + m.lg.label + "</span> " +
-        '<span class="pvp-tile-line">L' + fmtLevel(m.lv) + " · " + m.cp + " " +
-        T.cp + "</span></div>";
+        '<div class="pvp-tile-line">L' + fmtLevel(m.lv) + " · " + m.cp + " " +
+        T.cp + "</div></div>";
     }).join("");
     box.innerHTML = '<div class="pvp-tiles">' + tiles + "</div>";
   }
@@ -812,7 +816,10 @@ def render_pvp_page(index, slug, iv, lang=DEFAULT_LANG):
         for slot, text in enumerate(labels):
             parts.append(_dots_row(text, slot, iv[slot]))
         parts.append("</div>")
-        parts.append('<div id="pvp-summary"></div>')
+        # Class *and* id: the id is what the script writes into, the class is
+        # what the stylesheet targets. It had only the id, so the margin that
+        # separates the summary from the league tables silently did nothing.
+        parts.append('<div id="pvp-summary" class="pvp-summary"></div>')
         parts.append('<div id="pvp-results"></div>')
 
         if relatives:
