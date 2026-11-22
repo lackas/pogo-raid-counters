@@ -576,6 +576,17 @@ def populate_types(raids: list[dict], type_map: dict[str, list[str]]) -> None:
 # Schattenform wirkt im Kampf, nicht auf die Werte.
 PVP_SKIP_SUFFIXES = ("_SHADOW_FORM",)
 
+# Costume forms -- a party hat, a Go Tour outfit, "Charmander Fall 2019 Form".
+# They carry the base form's stats unchanged, so in a rank table they are
+# exact duplicates and only make the search harder to use. The event year in
+# the id identifies them reliably: checked 2026-11-22, all 98 such entries
+# matched the stats of an existing entry, including the one that initially
+# looked like an exception (CORSOLA_SPRING_2026_FORM is a costume on the
+# *Galarian* Corsola, not the ordinary one). Genuine variants -- Alolan,
+# Galarian, Hisuian, Therian, Unown letters, Vivillon patterns -- carry no
+# year and are kept.
+PVP_COSTUME_RE = re.compile(r"(?<!\d)(19|20)\d{2}(?!\d)")
+
 # German species names come from the game's own localisation file, so they are
 # the strings the player actually sees in the app -- not a third-party
 # translation and not PokeAPI's form-name guesswork, which this project
@@ -664,6 +675,8 @@ def build_pokemon_index(
         if not pokemon_id or not (attack and defense and stamina):
             continue
         if any(pokemon_id.endswith(suffix) for suffix in PVP_SKIP_SUFFIXES):
+            continue
+        if PVP_COSTUME_RE.search(pokemon_id):
             continue
         entries.append({
             "id": pokemon_id,

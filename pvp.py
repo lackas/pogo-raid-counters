@@ -390,15 +390,35 @@ PVP_STYLES = """
         .pvp-iv-head { display: flex; justify-content: space-between; align-items: baseline;
             margin-bottom: 0.15rem; }
         .pvp-iv-head label { font-weight: 600; margin: 0; font-size: 0.9rem; }
-        /* 15 equal columns rather than a flex row: at 390 px a flex row of
-           fixed-width dots wrapped after 13 and put 14/15 on a line of their
-           own. A grid always fits exactly one row, whatever the width. */
-        .pvp-dots { display: grid; grid-template-columns: repeat(15, 1fr); gap: 0.18rem; }
-        .pvp-dot { height: 1.9rem; border-radius: 999px; border: 1px solid
-            var(--pico-muted-border-color); background: transparent; padding: 0; cursor: pointer;
-            font-size: 0.7rem; line-height: 1; color: var(--pico-muted-color); }
-        .pvp-dot.on { background: var(--pico-primary); border-color: var(--pico-primary);
-            color: var(--pico-primary-inverse); font-weight: 700; }
+        /* Three groups of five, like the appraisal bars in the game: grey
+           while empty, orange once anything is set, red at 15. Nested grids
+           rather than one row of fifteen, so the gaps sit exactly between
+           the groups and every segment stays the same width at any screen
+           size -- a flex row of fixed-width dots wrapped after 13 at 390 px
+           and put 14/15 on a line of their own. */
+        .pvp-dots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.35rem;
+            --iv-empty: #dde1e6; --iv-part: #ef9c3d; --iv-max: #e4596b;
+            --iv-empty-text: #6b7580; }
+        @media (prefers-color-scheme: dark) {
+            .pvp-dots { --iv-empty: #3a4047; --iv-empty-text: #9aa4ae; }
+        }
+        .pvp-group { display: grid; grid-template-columns: repeat(5, 1fr); }
+        /* margin: 0 matters -- Pico gives every button a bottom margin, which
+           made the group taller than the bars inside it. The rounding came
+           from clipping the group, so only the top corners landed on a bar
+           and the bottom ones sat in empty space below. The ends are rounded
+           on the segments themselves now, which does not depend on clipping
+           behaviour at all. */
+        .pvp-dot { height: 1.6rem; border: 0; border-radius: 0; padding: 0; margin: 0;
+            cursor: pointer; font-size: 0.68rem; line-height: 1; font-weight: 600;
+            background: var(--iv-empty); color: var(--iv-empty-text); }
+        .pvp-group .pvp-dot:first-child { border-radius: 999px 0 0 999px; }
+        .pvp-group .pvp-dot:last-child { border-radius: 0 999px 999px 0; }
+        /* Hairline between segments, so it is still clear where to click for
+           a particular value even though the group reads as one bar. */
+        .pvp-dot + .pvp-dot { box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.5); }
+        .pvp-dot.on { background: var(--iv-part); color: #fff; }
+        .pvp-dots.max .pvp-dot.on { background: var(--iv-max); }
         .pvp-iv-value { font-variant-numeric: tabular-nums; font-weight: 700;
             font-size: 1.05rem; }
         /* The summary is meant to answer "is this worth keeping" without
@@ -424,7 +444,14 @@ PVP_STYLES = """
         .pvp-tile-meta { display: flex; align-items: center; gap: 0.4rem;
             flex-wrap: wrap; margin-top: 0.25rem; }
         .pvp-tile-line { font-size: 0.8rem; color: var(--pico-muted-color); }
-        .pvp-tile-final { box-shadow: inset 0 0 0 1px var(--pico-muted-border-color); }
+        /* Gold for the final stage. In almost every lookup that is the form
+           being planned for, and an intermediate stage is the rare case --
+           so the one you usually want should be findable without reading
+           the names. Same gold as the legendary badge on the raid page. */
+        .pvp-tile-final { background: #fff8e1; box-shadow: inset 0 0 0 1px #d4af37; }
+        @media (prefers-color-scheme: dark) {
+            .pvp-tile-final { background: #332c17; }
+        }
         .pvp-summary-empty { font-size: 0.9rem; color: var(--pico-muted-color); }
         /* One colour per league, carried by a pill and the tile's left edge.
            Scanning the summary is then a colour match rather than reading
@@ -710,6 +737,7 @@ PVP_SCRIPT = r"""
     [0, 1, 2].forEach(function (slot) {
       var row = document.querySelector('[data-slot="' + slot + '"]');
       if (!row) return;
+      row.classList.toggle("max", iv[slot] === 15);
       row.querySelectorAll(".pvp-dot").forEach(function (dot) {
         dot.classList.toggle("on", Number(dot.dataset.value) <= iv[slot]);
       });
@@ -800,15 +828,20 @@ PVP_SCRIPT = r"""
 
 
 def _dots_row(label, slot, value):
-    dots = "".join(
-        f'<button type="button" class="pvp-dot" data-value="{n}">{n}</button>'
-        for n in range(1, 16)
+    groups = "".join(
+        '<span class="pvp-group">'
+        + "".join(
+            f'<button type="button" class="pvp-dot" data-value="{n}">{n}</button>'
+            for n in range(start, start + 5)
+        )
+        + "</span>"
+        for start in (1, 6, 11)
     )
     return (
         '<div class="pvp-iv-row">'
         f'<div class="pvp-iv-head"><label>{label}</label>'
         f'<span class="pvp-iv-value">{value}</span></div>'
-        f'<div class="pvp-dots" data-slot="{slot}">{dots}</div>'
+        f'<div class="pvp-dots" data-slot="{slot}">{groups}</div>'
         "</div>"
     )
 

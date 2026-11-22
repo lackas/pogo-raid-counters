@@ -459,6 +459,40 @@ def _pvp_fixture(tmp_path):
     return path
 
 
+def test_pvp_costume_forms_are_dropped():
+    """Costumes are duplicates; genuine variants are not.
+
+    "Charmander Fall 2019 Form" has Charmander's stats exactly, so it is the
+    same row in every rank table and only makes the search box worse. The
+    event year identifies those reliably -- and nothing else, which is the
+    half worth testing: Alolan, Galarian, Hisuian, Therian, Unown letters
+    and Paldean Tauros carry no year and have to survive.
+    """
+    from availableraids import build_pokemon_index
+    blob = {"pokemon": [
+        {"pokemonId": pid, "stats": {"baseAttack": 100, "baseDefense": 100,
+                                     "baseStamina": 100},
+         "type": "POKEMON_TYPE_FIRE", "pokedex": {"pokemonNum": 4}}
+        for pid in (
+            "CHARMANDER", "CHARMANDER_FALL_2019_FORM", "PIKACHU_GOTOUR_2024_A_02_FORM",
+            "CORSOLA_SPRING_2026_FORM", "BEARTIC_WINTER_2020_FORM",
+            "RATTATA_ALOLA_FORM", "CORSOLA_GALARIAN_FORM", "VOLTORB_HISUIAN_FORM",
+            "TORNADUS_THERIAN_FORM", "UNOWN_S_FORM", "TAUROS_PALDEA_BLAZE_FORM",
+            "PIKACHU_SHADOW_FORM",
+        )
+    ]}
+    kept = {entry["id"] for entry in build_pokemon_index(blob, {})}
+    for dropped in ("CHARMANDER_FALL_2019_FORM", "PIKACHU_GOTOUR_2024_A_02_FORM",
+                    "CORSOLA_SPRING_2026_FORM", "BEARTIC_WINTER_2020_FORM",
+                    "PIKACHU_SHADOW_FORM"):
+        assert dropped not in kept, f"{dropped} should have been filtered out"
+    for survivor in ("CHARMANDER", "RATTATA_ALOLA_FORM", "CORSOLA_GALARIAN_FORM",
+                     "VOLTORB_HISUIAN_FORM", "TORNADUS_THERIAN_FORM", "UNOWN_S_FORM",
+                     "TAUROS_PALDEA_BLAZE_FORM"):
+        assert survivor in kept, f"{survivor} is a real variant and must be kept"
+    print("OK: pvp costume forms dropped")
+
+
 def test_pvp_rank_tables():
     """The published rank-1 spreads, which are the whole contract of the page.
 
@@ -864,6 +898,7 @@ if __name__ == "__main__":
              test_icon_mirror_names_and_serving, test_max_battles_are_separated,
              test_build_raid_entries, test_format_local,
              test_api_effectiveness, test_api_raids, test_watchdog,
+             test_pvp_costume_forms_are_dropped,
              test_pvp_rank_tables, test_pvp_cpm_anchors, test_pvp_preevo_cp,
              test_pvp_search_and_family, test_pvp_styles_are_reachable,
              test_pvp_script_parses,
