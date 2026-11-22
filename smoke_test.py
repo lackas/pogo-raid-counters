@@ -440,6 +440,14 @@ def _pvp_fixture(tmp_path):
          "atk": 238, "def": 203, "sta": 225, "types": ["dark", "steel"],
          "parent": "BISHARP", "family": "FAMILY_PAWNIARD", "image": "/icons/c.png",
          "name_de": "Gladimperio"},
+        {"id": "AERODACTYL", "slug": "aerodactyl", "name": "Aerodactyl",
+         "atk": 221, "def": 159, "sta": 190, "types": ["rock", "flying"],
+         "parent": None, "family": "FAMILY_AERODACTYL", "image": None,
+         "name_de": "Aerodactyl"},
+        {"id": "AERODACTYL_MEGA", "slug": "aerodactyl-mega", "name": "Mega Aerodactyl",
+         "atk": 292, "def": 210, "sta": 190, "types": ["rock", "flying"],
+         "parent": "AERODACTYL", "family": "FAMILY_AERODACTYL", "image": None,
+         "name_de": "Mega-Aerodactyl"},
         {"id": "AZUMARILL", "slug": "azumarill", "name": "Azumarill",
          "atk": 112, "def": 152, "sta": 225, "types": ["water", "fairy"],
          "parent": "MARILL", "family": "FAMILY_MARILL", "image": None,
@@ -515,7 +523,7 @@ def test_pvp_search_and_family(tmp_dir=None):
     import pvp
     with tempfile.TemporaryDirectory() as tmp:
         index = pvp.load_pokemon(_pvp_fixture(tmp))
-        assert len(index) == 4, f"expected 4 species, got {len(index)}"
+        assert len(index) == 6, f"expected 6 species, got {len(index)}"
 
         # Substring, and a prefix hit must outrank a mid-word one.
         names = [hit["name"] for hit in pvp.search_pokemon(index, "sharp")]
@@ -529,6 +537,16 @@ def test_pvp_search_and_family(tmp_dir=None):
         assert not pvp._is_battle_form({"id": "SWAMPERT"})
         assert pvp._is_battle_form({"id": "SWAMPERT_MEGA"})
         assert pvp._is_battle_form({"id": "VENUSAUR_GIGANTAMAX"})
+
+        # A Mega is not an evolution step, so it must not extend the chain.
+        # This matters beyond cosmetics: Little Cup takes Pokemon that can
+        # still evolve, and a chain of [Aerodactyl, Mega Aerodactyl] would
+        # have made a fully grown Aerodactyl look eligible.
+        aero = [m["name"] for m in pvp.family_chain(index, index["aerodactyl"])]
+        assert aero == ["Aerodactyl"], aero
+        others = [m["name"] for m in pvp.family_members(index, index["aerodactyl"])
+                  if m not in pvp.family_chain(index, index["aerodactyl"])]
+        assert others == ["Mega Aerodactyl"], others
 
         chain = [m["name"] for m in pvp.family_chain(index, index["bisharp"])]
         assert chain == ["Pawniard", "Bisharp", "Kingambit"], chain
@@ -778,6 +796,8 @@ def test_pvp_no_downgrade():
         # targetIndex on is usable, everything before it is only a ceiling.
         assert "FAMILY.slice(D.targetIndex" in script
         assert "FAMILY.slice(0, D.targetIndex" in script
+        # Detail tables walk the whole line; only the summary is sliced.
+        assert "FAMILY.forEach(function (mon) {\n        if (!eligible(mon, lg))" in script
     print("OK: pvp no downgrade")
 
 
@@ -822,8 +842,8 @@ def test_pvp_routes():
             status, body = get("/api/pvp/index")
             assert status == "200 OK", status
             payload = json.loads(body)
-            assert len(payload["pokemon"]) == 4, payload
-            assert payload["pokemon"][0][0] == "azumarill", "index should be name-sorted"
+            assert len(payload["pokemon"]) == 6, payload
+            assert payload["pokemon"][0][0] == "aerodactyl", "index should be name-sorted"
             assert captured["headers"]["Cache-Control"].startswith("public"), \
                 "species index must be cacheable"
         finally:

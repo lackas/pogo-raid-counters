@@ -245,14 +245,16 @@ def family_chain(index, entry):
     while True:                                   # and up to the final form
         children = [
             item for item in index.values()
-            if item.get("parent") == current.get("id") and item.get("id") not in seen
+            if item.get("parent") == current.get("id")
+            and item.get("id") not in seen
+            and not _is_battle_form(item)
         ]
         if not children:
             break
         # Alphabetical order picked "Mega Swampert" over "Swampert" and the
         # chain then skipped the form people actually use. Temporary battle
         # forms are not an evolution step, so they sort last.
-        children.sort(key=lambda item: (_is_battle_form(item), item.get("name") or ""))
+        children.sort(key=lambda item: item.get("name") or "")
         child = children[0]
         seen.add(child.get("id"))
         chain.append(child)
@@ -431,16 +433,19 @@ PVP_STYLES = """
         .pvp-pill { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px;
             font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em;
             vertical-align: 0.12em; }
-        .lg-little { background: #2e7d32; color: #fff; }
-        .lg-great  { background: #1565c0; color: #fff; }
-        .lg-ultra  { background: #f9a825; color: #1f1f1f; }
-        .lg-master { background: #6a1b9a; color: #fff; }
+        /* Scoped to .pvp-pill on purpose. These rules also set a text colour,
+           and the tile carries the same lg-* class for its left border -- so
+           an unscoped .lg-great put color:#fff on the whole tile and the
+           Pokemon name went white on white. Only the Ultra tile stayed
+           readable, because yellow needs dark text. */
+        .pvp-pill.lg-little { background: #2e7d32; color: #fff; }
+        .pvp-pill.lg-great  { background: #1565c0; color: #fff; }
+        .pvp-pill.lg-ultra  { background: #f9a825; color: #1f1f1f; }
+        .pvp-pill.lg-master { background: #6a1b9a; color: #fff; }
         .pvp-tile.lg-little { border-left-color: #2e7d32; }
         .pvp-tile.lg-great  { border-left-color: #1565c0; }
         .pvp-tile.lg-ultra  { border-left-color: #f9a825; }
         .pvp-tile.lg-master { border-left-color: #6a1b9a; }
-        .pvp-tile.lg-little, .pvp-tile.lg-great,
-        .pvp-tile.lg-ultra, .pvp-tile.lg-master { background: transparent; }
         .pvp-league { margin-bottom: 2rem; }
         .pvp-league h3 { margin-bottom: 0.5rem; display: flex; align-items: center;
             gap: 0.5rem; flex-wrap: wrap; }
@@ -579,16 +584,33 @@ PVP_SCRIPT = r"""
   // the Pokemon in your bag may show *before* you evolve it.
   var EARLIER = FAMILY.slice(0, D.targetIndex || 0);
 
+  // Little Cup takes Pokemon that can still evolve and never have -- so the
+  // base form of a line that has one, and nothing else. Swampert was being
+  // ranked in a cup it cannot enter, which is worse than unhelpful.
+  function littleEligible(mon) {
+    return FAMILY.length > 1 && mon === FAMILY[0];
+  }
+
+  function eligible(mon, lg) {
+    return lg.key !== "little" || littleEligible(mon);
+  }
+
   function render(iv) {
     var key = (iv[0] << 8) | (iv[1] << 4) | iv[2];
     var out = [], matches = [];
     LEAGUES.forEach(function (lg) {
       var rows = [], targetLevel = null;
-      USABLE.forEach(function (mon) {
+      // Detail tables show the whole line again: there is room once you are
+      // scrolling, and seeing where the earlier stages land is useful
+      // context. The summary above stays limited to the selected stage and
+      // up, because that is the part meant to be read at a glance.
+      FAMILY.forEach(function (mon) {
+        if (!eligible(mon, lg)) return;
         var t = TABLES[mon.slug][lg.key];
         var fits = t.sp[key] > 0;
         var isFinal = mon.slug === FINAL;
-        if (fits && (isFinal || t.rank[key] <= t.count * MATCH_SHARE)) {
+        var usable = USABLE.indexOf(mon) >= 0;
+        if (fits && usable && (isFinal || t.rank[key] <= t.count * MATCH_SHARE)) {
           matches.push({ mon: mon, lg: lg, rank: t.rank[key], count: t.count,
                          lv: t.lv[key], cp: t.cp[key], isFinal: isFinal,
                          cls: rankClass(t.rank[key], t.count) });
@@ -623,6 +645,7 @@ PVP_SCRIPT = r"""
           " <small>(L" + fmtLevel(targetLevel) + ")</small></p>";
       }
 
+      if (!rows.length) return;   // nobody in the line may enter this cup
       out.push('<section class="pvp-league"><h3><span class="pvp-pill lg-' + lg.key +
         '">' + lg.label + "</span>" +
         (lg.cap ? T.cap.replace("%s", lg.cap) : T.nocap) +
