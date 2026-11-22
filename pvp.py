@@ -407,12 +407,21 @@ PVP_STYLES = """
             gap: 0.5rem; }
         .pvp-tile { border: 1px solid var(--pico-muted-border-color); border-left-width: 5px;
             border-radius: 0.4rem; padding: 0.4rem 0.6rem; }
+        /* Fixed two-line layout, deliberately without flex-wrap. With
+           wrapping, whether the name stayed on the first line depended on
+           how wide the rank happened to be, so "#5 Swampert" showed its name
+           while "#710" next to it did not -- same markup, different result
+           per tile. Rank and name now share line one and never wrap; a long
+           name is clipped with an ellipsis instead of pushing anything away.
+           The pill moves down to line two next to level and CP. */
         .pvp-tile-head { display: flex; align-items: baseline; gap: 0.4rem;
-            flex-wrap: wrap; line-height: 1.25; }
-        .pvp-tile-rank { font-size: 1.2rem; font-weight: 700; }
-        .pvp-tile-form { font-weight: 600; }
-        .pvp-tile-line { font-size: 0.8rem; color: var(--pico-muted-color);
-            margin-top: 0.1rem; }
+            line-height: 1.25; min-width: 0; }
+        .pvp-tile-rank { font-size: 1.2rem; font-weight: 700; flex: none; }
+        .pvp-tile-form { font-weight: 600; min-width: 0; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+        .pvp-tile-meta { display: flex; align-items: center; gap: 0.4rem;
+            flex-wrap: wrap; margin-top: 0.25rem; }
+        .pvp-tile-line { font-size: 0.8rem; color: var(--pico-muted-color); }
         .pvp-tile-final { box-shadow: inset 0 0 0 1px var(--pico-muted-border-color); }
         .pvp-summary-empty { font-size: 0.9rem; color: var(--pico-muted-color); }
         /* One colour per league, carried by a pill and the tile's left edge.
@@ -653,10 +662,10 @@ PVP_SCRIPT = r"""
       return '<div class="pvp-tile lg-' + m.lg.key +
         (m.isFinal ? " pvp-tile-final" : "") + '">' +
         '<div class="pvp-tile-head"><span class="pvp-tile-rank ' + m.cls + '">#' +
-        m.rank + '</span><span class="pvp-tile-form">' + m.mon.name + "</span>" +
-        '<span class="pvp-pill lg-' + m.lg.key + '">' + m.lg.label + "</span></div>" +
-        '<div class="pvp-tile-line">L' + fmtLevel(m.lv) + " · " + m.cp + " " +
-        T.cp + "</div></div>";
+        m.rank + '</span><span class="pvp-tile-form">' + m.mon.name + "</span></div>" +
+        '<div class="pvp-tile-meta"><span class="pvp-pill lg-' + m.lg.key + '">' +
+        m.lg.label + '</span><span class="pvp-tile-line">L' + fmtLevel(m.lv) +
+        " · " + m.cp + " " + T.cp + "</span></div></div>";
     }).join("");
     box.innerHTML = '<div class="pvp-tiles">' + tiles + "</div>";
   }
