@@ -496,13 +496,13 @@ PVP_SCRIPT = r"""
     cap: " <small>(max %s CP)</small>", nocap: " <small>(no cap)</small>",
     form: "Form", level: "Level", cp: "CP", rank: "Rank", prod: "Stat product",
     nofit: "over the cap, even at level 1",
-    ceiling: "Before evolving, at most: ",
+    ceiling: "When evolving: ",
     empty: "IV %s: nothing in the top 5 % of any league. Full numbers below."
   } : {
     cap: " <small>(max. %s WP)</small>", nocap: " <small>(ohne Limit)</small>",
     form: "Form", level: "Level", cp: "WP", rank: "Rang", prod: "Statwert",
     nofit: "über dem Limit, auch auf Level 1",
-    ceiling: "Vor der Entwicklung höchstens: ",
+    ceiling: "Beim Entwickeln: ",
     empty: "IV %s: nichts in den besten 5 % einer Liga. Vollständige Zahlen unten."
   };
 
@@ -640,13 +640,19 @@ PVP_SCRIPT = r"""
       // earlier stage may go before evolving busts the cap.
       var note = "";
       var others = FAMILY.filter(function (mon) { return mon.slug !== FINAL; });
-      if (anchorLevel !== null && others.length) {
+      // Skipped whenever the final stage reaches the level cap anyway: then
+      // the CP limit is not what binds, there is nothing to stay under, and
+      // a ceiling would be a number pretending to be a constraint. Covers
+      // Master (always maxed) and any league a species is simply too small
+      // to fill.
+      if (anchorLevel !== null && anchorLevel < MAXLV && others.length) {
         var parts = others.map(function (mon) {
           var c = cpAtLevel(mon, iv, anchorLevel);
-          return mon.name + " " + (c === null ? "?" : c) + " " + T.cp;
+          // &lt; not "<": this string goes into innerHTML, and a raw "<"
+          // followed by a digit is at best invalid markup.
+          return mon.name + " &lt;" + (c === null ? "?" : c) + " " + T.cp;
         });
-        note = '<p class="pvp-note">' + T.ceiling + parts.join(" · ") +
-          " <small>(L" + fmtLevel(anchorLevel) + ")</small></p>";
+        note = '<p class="pvp-note">' + T.ceiling + parts.join("; ") + "</p>";
       }
 
       if (!rows.length) return;   // nobody in the line may enter this cup
