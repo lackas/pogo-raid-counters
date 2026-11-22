@@ -691,6 +691,12 @@ def build_pokemon_index(
                 if value
             ],
             "parent": mon.get("parentPokemonId"),
+            # The species this form belongs to, e.g. RATTATA for
+            # RATTATA_ALOLA_FORM. Needed because parentPokemonId on a
+            # regional form points at the *ordinary* previous stage
+            # (Alolan Raticate's parent is plain RATTATA), so the chain can
+            # only be followed by going through the base species.
+            "base": (mon.get("pokedex") or {}).get("pokemonId") or pokemon_id,
             "family": mon.get("familyId"),
             "image": icon_url(pokemon_id, icon_map),
             "name_de": german_display_name(pokemon_id, mon.get("pokedex"), german or {}),

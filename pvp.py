@@ -211,6 +211,36 @@ def search_pokemon(index, query, limit=12):
 
 
 BATTLE_FORM_MARKERS = ("_MEGA", "_GIGANTAMAX", "_PRIMAL")
+# A regional form evolves into the same regional form, but the data does not
+# say so: Alolan Raticate's parentPokemonId is plain RATTATA. Following parent
+# links alone therefore left every regional form a one-member chain -- 30
+# species on 2026-11-22 -- so Alolan Rattata showed no evolution at all and
+# its page could only report that nothing ranked anywhere. The variant is
+# matched explicitly instead, going through the base species on both sides.
+REGIONAL_VARIANTS = ("ALOLA", "GALARIAN", "HISUIAN", "PALDEA")
+
+
+def _variant(entry):
+    identifier = (entry or {}).get("id") or ""
+    for name in REGIONAL_VARIANTS:
+        if f"_{name}" in identifier:
+            return name
+    return ""
+
+
+def _base_id(entry):
+    """The species a form belongs to; falls back to the id for older dumps."""
+    return (entry or {}).get("base") or (entry or {}).get("id")
+
+
+def _pick_variant(candidates, variant):
+    """Same regional variant if one exists, otherwise the plain form."""
+    if not candidates:
+        return None
+    same = [c for c in candidates if _variant(c) == variant]
+    plain = [c for c in candidates if not _variant(c)]
+    pool = same or plain or candidates
+    return min(pool, key=lambda item: item.get("name") or "")
 
 
 def _is_battle_form(entry):
@@ -225,37 +255,44 @@ def family_chain(index, entry):
     Built from parentPokemonId rather than familyId alone, because a family can
     branch (Eevee) and only the parent links say which branch a member is on.
     Members off the selected branch are dropped; the caller links to them via
-    `family_members` instead.
+    `family_members` instead. Mega and Gigantamax are battle forms, not
+    evolution steps, and are left out on both counts.
     """
     if not entry:
         return []
-    by_id = {item.get("id"): item for item in index.values()}
+    variant = _variant(entry)
     chain = [entry]
-    current = entry
     seen = {entry.get("id")}
+
+    current = entry
     while True:                                   # walk down to the base form
         parent_id = current.get("parent")
-        parent = by_id.get(parent_id)
-        if not parent or parent_id in seen:
+        if not parent_id:
             break
-        seen.add(parent_id)
+        parent = _pick_variant(
+            [item for item in index.values()
+             if _base_id(item) == parent_id
+             and item.get("id") not in seen
+             and not _is_battle_form(item)],
+            variant,
+        )
+        if not parent:
+            break
+        seen.add(parent.get("id"))
         chain.insert(0, parent)
         current = parent
+
     current = entry
     while True:                                   # and up to the final form
-        children = [
-            item for item in index.values()
-            if item.get("parent") == current.get("id")
-            and item.get("id") not in seen
-            and not _is_battle_form(item)
-        ]
-        if not children:
+        child = _pick_variant(
+            [item for item in index.values()
+             if item.get("parent") == _base_id(current)
+             and item.get("id") not in seen
+             and not _is_battle_form(item)],
+            variant,
+        )
+        if not child:
             break
-        # Alphabetical order picked "Mega Swampert" over "Swampert" and the
-        # chain then skipped the form people actually use. Temporary battle
-        # forms are not an evolution step, so they sort last.
-        children.sort(key=lambda item: item.get("name") or "")
-        child = children[0]
         seen.add(child.get("id"))
         chain.append(child)
         current = child

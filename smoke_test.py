@@ -440,6 +440,22 @@ def _pvp_fixture(tmp_path):
          "atk": 238, "def": 203, "sta": 225, "types": ["dark", "steel"],
          "parent": "BISHARP", "family": "FAMILY_PAWNIARD", "image": "/icons/c.png",
          "name_de": "Gladimperio"},
+        {"id": "RATTATA", "slug": "rattata", "name": "Rattata",
+         "atk": 103, "def": 70, "sta": 102, "types": ["normal"],
+         "parent": None, "base": "RATTATA", "family": "FAMILY_RATTATA",
+         "image": None, "name_de": "Rattfratz"},
+        {"id": "RATTATA_ALOLA_FORM", "slug": "rattata-alola-form",
+         "name": "Rattata (Alolan)", "atk": 103, "def": 70, "sta": 102,
+         "types": ["dark", "normal"], "parent": None, "base": "RATTATA",
+         "family": "FAMILY_RATTATA", "image": None, "name_de": "Alola-Rattfratz"},
+        {"id": "RATICATE", "slug": "raticate", "name": "Raticate",
+         "atk": 161, "def": 139, "sta": 146, "types": ["normal"],
+         "parent": "RATTATA", "base": "RATICATE", "family": "FAMILY_RATTATA",
+         "image": None, "name_de": "Rattikarl"},
+        {"id": "RATICATE_ALOLA_FORM", "slug": "raticate-alola-form",
+         "name": "Raticate (Alolan)", "atk": 135, "def": 154, "sta": 181,
+         "types": ["dark", "normal"], "parent": "RATTATA", "base": "RATICATE",
+         "family": "FAMILY_RATTATA", "image": None, "name_de": "Alola-Rattikarl"},
         {"id": "AERODACTYL", "slug": "aerodactyl", "name": "Aerodactyl",
          "atk": 221, "def": 159, "sta": 190, "types": ["rock", "flying"],
          "parent": None, "family": "FAMILY_AERODACTYL", "image": None,
@@ -557,7 +573,7 @@ def test_pvp_search_and_family(tmp_dir=None):
     import pvp
     with tempfile.TemporaryDirectory() as tmp:
         index = pvp.load_pokemon(_pvp_fixture(tmp))
-        assert len(index) == 6, f"expected 6 species, got {len(index)}"
+        assert len(index) == 10, f"expected 10 species, got {len(index)}"
 
         # Substring, and a prefix hit must outrank a mid-word one.
         names = [hit["name"] for hit in pvp.search_pokemon(index, "sharp")]
@@ -581,6 +597,19 @@ def test_pvp_search_and_family(tmp_dir=None):
         others = [m["name"] for m in pvp.family_members(index, index["aerodactyl"])
                   if m not in pvp.family_chain(index, index["aerodactyl"])]
         assert others == ["Mega Aerodactyl"], others
+
+        # A regional form evolves into the same regional form, but the data
+        # says otherwise: Alolan Raticate's parent is plain RATTATA. Without
+        # matching the variant, Alolan Rattata was a chain of one, so its
+        # page found no evolution and could only report that nothing ranked.
+        alolan = [m["name"] for m in pvp.family_chain(index, index["rattata-alola-form"])]
+        assert alolan == ["Rattata (Alolan)", "Raticate (Alolan)"], alolan
+        # Reached from the other end as well.
+        assert [m["name"] for m in
+                pvp.family_chain(index, index["raticate-alola-form"])] == alolan
+        # And the ordinary line must not pick up the regional forms.
+        plain = [m["name"] for m in pvp.family_chain(index, index["rattata"])]
+        assert plain == ["Rattata", "Raticate"], plain
 
         chain = [m["name"] for m in pvp.family_chain(index, index["bisharp"])]
         assert chain == ["Pawniard", "Bisharp", "Kingambit"], chain
@@ -881,7 +910,7 @@ def test_pvp_routes():
             status, body = get("/api/pvp/index")
             assert status == "200 OK", status
             payload = json.loads(body)
-            assert len(payload["pokemon"]) == 6, payload
+            assert len(payload["pokemon"]) == 10, payload
             assert payload["pokemon"][0][0] == "aerodactyl", "index should be name-sorted"
             assert captured["headers"]["Cache-Control"].startswith("public"), \
                 "species index must be cacheable"
