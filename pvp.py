@@ -297,18 +297,37 @@ PVP_STYLES = """
         .pvp-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
         .pvp-head img { width: 72px; height: 72px; object-fit: contain; }
         .pvp-head h2 { margin: 0; }
-        .pvp-iv { margin: 1rem 0; }
-        .pvp-iv-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.45rem;
-            flex-wrap: wrap; }
-        .pvp-iv-row > label { min-width: 5.5rem; font-weight: 600; margin: 0; }
-        .pvp-dots { display: flex; gap: 0.22rem; flex-wrap: wrap; }
-        .pvp-dot { width: 1.45rem; height: 1.45rem; border-radius: 50%; border: 1px solid
+        .pvp-iv { margin: 0.8rem 0; max-width: 26rem; }
+        .pvp-iv-row { margin-bottom: 0.5rem; }
+        .pvp-iv-head { display: flex; justify-content: space-between; align-items: baseline;
+            margin-bottom: 0.15rem; }
+        .pvp-iv-head label { font-weight: 600; margin: 0; font-size: 0.9rem; }
+        /* 15 equal columns rather than a flex row: at 390 px a flex row of
+           fixed-width dots wrapped after 13 and put 14/15 on a line of their
+           own. A grid always fits exactly one row, whatever the width. */
+        .pvp-dots { display: grid; grid-template-columns: repeat(15, 1fr); gap: 0.18rem; }
+        .pvp-dot { height: 1.9rem; border-radius: 999px; border: 1px solid
             var(--pico-muted-border-color); background: transparent; padding: 0; cursor: pointer;
             font-size: 0.7rem; line-height: 1; color: var(--pico-muted-color); }
         .pvp-dot.on { background: var(--pico-primary); border-color: var(--pico-primary);
             color: var(--pico-primary-inverse); font-weight: 700; }
-        .pvp-iv-value { min-width: 1.8rem; text-align: right; font-variant-numeric: tabular-nums;
-            font-weight: 700; }
+        .pvp-iv-value { font-variant-numeric: tabular-nums; font-weight: 700;
+            font-size: 1.05rem; }
+        /* The summary is meant to answer "is this worth keeping" without
+           scrolling, so it has to stay inside one phone screen together with
+           the header and the dots. Hence the tight tiles. */
+        .pvp-summary { margin: 0.9rem 0 1.2rem; }
+        .pvp-summary h3 { font-size: 1rem; margin-bottom: 0.4rem; }
+        .pvp-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+            gap: 0.45rem; }
+        .pvp-tile { border: 1px solid var(--pico-muted-border-color); border-left-width: 4px;
+            border-radius: 0.4rem; padding: 0.4rem 0.6rem; }
+        .pvp-tile.top { border-left-color: #2e7d32; }
+        .pvp-tile.good { border-left-color: #66bb6a; }
+        .pvp-tile-rank { font-size: 1.15rem; font-weight: 700; line-height: 1.1; }
+        .pvp-tile-form { font-weight: 600; }
+        .pvp-tile-line { font-size: 0.8rem; color: var(--pico-muted-color); }
+        .pvp-summary-empty { font-size: 0.9rem; color: var(--pico-muted-color); }
         .pvp-league { margin-bottom: 1.2rem; }
         .pvp-league h3 { margin-bottom: 0.3rem; }
         .pvp-league table { margin-bottom: 0.3rem; }
@@ -395,14 +414,23 @@ PVP_SCRIPT = """
 
   function fmtLevel(v) { return v % 1 ? v.toFixed(1) : String(v); }
 
+  // "Worth keeping" cut-off. Top 5% of 4096 is rank 205 -- generous enough
+  // that a decent spread shows up, tight enough that the summary stays short.
+  var MATCH_SHARE = 0.05;
+
   function render(iv) {
     var key = (iv[0] << 8) | (iv[1] << 4) | iv[2];
-    var out = [];
+    var out = [], matches = [];
     LEAGUES.forEach(function (lg) {
       var rows = [], targetLevel = null;
       FAMILY.forEach(function (mon) {
         var t = TABLES[mon.slug][lg.key];
         var fits = t.sp[key] > 0;
+        if (fits && t.rank[key] <= t.count * MATCH_SHARE) {
+          matches.push({ mon: mon, lg: lg, rank: t.rank[key], count: t.count,
+                         lv: t.lv[key], cp: t.cp[key],
+                         cls: rankClass(t.rank[key], t.count) });
+        }
         if (mon.slug === TARGET && fits) targetLevel = t.lv[key];
         var name = mon.slug === TARGET
           ? '<span class="pvp-target">' + mon.name + "</span>"
@@ -440,6 +468,33 @@ PVP_SCRIPT = """
     });
     var target = document.getElementById("pvp-results");
     if (target) target.innerHTML = out.join("");
+    renderSummary(matches, iv);
+  }
+
+  // Shown above the detail tables so the answer to "is this one worth it"
+  // fits on the first screen; the full breakdown is a scroll away. Only
+  // actual hits are listed -- a bad spread gets one quiet line instead of a
+  // wall of mediocre numbers.
+  function renderSummary(matches, iv) {
+    var box = document.getElementById("pvp-summary");
+    if (!box) return;
+    if (!matches.length) {
+      box.innerHTML = '<p class="pvp-summary-empty">IV ' + iv.join("/") +
+        ": nichts in den besten 5 % einer Liga. Die vollständigen Zahlen stehen unten.</p>";
+      return;
+    }
+    matches.sort(function (a, b) {
+      return (a.rank / a.count) - (b.rank / b.count) || a.rank - b.rank;
+    });
+    var tiles = matches.slice(0, 6).map(function (m) {
+      return '<div class="pvp-tile ' + (m.cls === "pvp-rank-top" ? "top" : "good") + '">' +
+        '<div class="pvp-tile-rank ' + m.cls + '">#' + m.rank +
+        ' <small class="pvp-tile-line">/ ' + m.count + "</small></div>" +
+        '<div class="pvp-tile-form">' + m.mon.name + "</div>" +
+        '<div class="pvp-tile-line">' + m.lg.label + " · L" + fmtLevel(m.lv) +
+        " · " + m.cp + " WP</div></div>";
+    }).join("");
+    box.innerHTML = "<h3>Auf einen Blick</h3><div class=\"pvp-tiles\">" + tiles + "</div>";
   }
 
   // ---- IV dots: one click per stat, clicking the lit dot again clears to 0.
@@ -452,7 +507,8 @@ PVP_SCRIPT = """
       row.querySelectorAll(".pvp-dot").forEach(function (dot) {
         dot.classList.toggle("on", Number(dot.dataset.value) <= iv[slot]);
       });
-      row.parentNode.querySelector(".pvp-iv-value").textContent = iv[slot];
+      var value = row.parentNode.querySelector(".pvp-iv-value");
+      if (value) value.textContent = iv[slot];
     });
     render(iv);
     var url = "/pvp/" + TARGET + "/" + iv.join("-");
@@ -537,9 +593,9 @@ def _dots_row(label, slot, value):
     )
     return (
         '<div class="pvp-iv-row">'
-        f"<label>{label}</label>"
-        f'<span class="pvp-dots" data-slot="{slot}">{dots}</span>'
-        f'<span class="pvp-iv-value">{value}</span>'
+        f'<div class="pvp-iv-head"><label>{label}</label>'
+        f'<span class="pvp-iv-value">{value}</span></div>'
+        f'<div class="pvp-dots" data-slot="{slot}">{dots}</div>'
         "</div>"
     )
 
@@ -616,6 +672,7 @@ def render_pvp_page(index, slug, iv):
         parts.append(_dots_row("Verteidigung", 1, iv[1]))
         parts.append(_dots_row("KP", 2, iv[2]))
         parts.append("</div>")
+        parts.append('<div id="pvp-summary"></div>')
         parts.append('<div id="pvp-results"></div>')
 
         if relatives:
