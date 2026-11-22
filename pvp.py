@@ -188,15 +188,24 @@ def search_pokemon(index, query, limit=12):
     needle_slug = SLUG_RE.sub("-", needle).strip("-")
     hits = []
     for entry in index.values():
-        name = (entry.get("name") or "").lower()
-        slug = entry.get("slug") or ""
-        if needle in name:
-            position = name.index(needle)
-        elif needle_slug and needle_slug in slug:
-            position = slug.index(needle_slug)
-        else:
-            continue
-        hits.append((0 if position == 0 else 1, position, len(name), name, entry))
+        # Both languages are always searched, whatever the display language
+        # is set to. Someone who knows a Pokemon as Glurak should not have to
+        # flip a switch before they can type it.
+        candidates = [(entry.get("name") or "").lower(),
+                      (entry.get("name_de") or "").lower()]
+        position = None
+        for name in candidates:
+            if name and needle in name:
+                position = name.index(needle)
+                break
+        if position is None:
+            slug = entry.get("slug") or ""
+            if needle_slug and needle_slug in slug:
+                position = slug.index(needle_slug)
+            else:
+                continue
+        label = candidates[0] or candidates[1]
+        hits.append((0 if position == 0 else 1, position, len(label), label, entry))
     hits.sort(key=lambda hit: hit[:4])
     return [hit[4] for hit in hits[:limit]]
 
@@ -254,6 +263,71 @@ def family_members(index, entry):
 # ------------------------------------------------------------------ rendering
 
 PVP_ROUTE = "/pvp"
+LANGS = ("de", "en")
+DEFAULT_LANG = "de"
+LANG_COOKIE = "pvp_lang"
+
+
+def pick_lang(value):
+    """Normalise a cookie or query value to a supported language."""
+    value = (value or "").strip().lower()
+    return value if value in LANGS else DEFAULT_LANG
+
+
+def lang_from_accept(header):
+    """Best supported language from an Accept-Language header.
+
+    Honours the q-values rather than just taking the first entry, so a
+    browser sending "en;q=0.4, de;q=0.9" gets German. Unparsable entries are
+    skipped instead of failing the request.
+    """
+    best, best_q = DEFAULT_LANG, -1.0
+    for chunk in (header or "").split(","):
+        part, _, params = chunk.strip().partition(";")
+        tag = part.strip().lower().split("-")[0]
+        if tag not in LANGS:
+            continue
+        quality = 1.0
+        if params.strip().startswith("q="):
+            try:
+                quality = float(params.strip()[2:])
+            except ValueError:
+                quality = 1.0
+        if quality > best_q:
+            best, best_q = tag, quality
+    return best
+
+
+def choose_lang(cookie_header, accept_header):
+    """Cookie wins; otherwise follow the browser; otherwise German.
+
+    The cookie is an explicit choice by the person and must override what
+    their browser happens to advertise -- someone with an English-language
+    phone may well want the German names.
+    """
+    for chunk in (cookie_header or "").split(";"):
+        name, _, value = chunk.strip().partition("=")
+        if name == LANG_COOKIE and value.strip().lower() in LANGS:
+            return value.strip().lower()
+    return lang_from_accept(accept_header)
+
+
+def lang_from_cookies(header):
+    """Cookie only, ignoring the browser. Kept for the tests and callers
+    that genuinely only care about the stored choice."""
+    return choose_lang(header, None)
+
+
+def named(entry, lang):
+    """Display name in the chosen language, falling back to English.
+
+    The fallback matters: ~20 of the newest species have no German string in
+    the game's localisation file yet, and an empty name would be worse than
+    an English one.
+    """
+    if lang == "de":
+        return (entry or {}).get("name_de") or (entry or {}).get("name") or ""
+    return (entry or {}).get("name") or ""
 IV_PATH_RE = re.compile(r"\A(\d{1,2})-(\d{1,2})-(\d{1,2})\Z")
 
 
@@ -316,20 +390,35 @@ PVP_STYLES = """
         /* The summary is meant to answer "is this worth keeping" without
            scrolling, so it has to stay inside one phone screen together with
            the header and the dots. Hence the tight tiles. */
-        .pvp-summary { margin: 0.9rem 0 1.2rem; }
-        .pvp-summary h3 { font-size: 1rem; margin-bottom: 0.4rem; }
+        .pvp-summary { margin: 1.4rem 0 2.2rem; }
         .pvp-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
-            gap: 0.45rem; }
-        .pvp-tile { border: 1px solid var(--pico-muted-border-color); border-left-width: 4px;
-            border-radius: 0.4rem; padding: 0.4rem 0.6rem; }
-        .pvp-tile.top { border-left-color: #2e7d32; }
-        .pvp-tile.good { border-left-color: #66bb6a; }
-        .pvp-tile-rank { font-size: 1.15rem; font-weight: 700; line-height: 1.1; }
-        .pvp-tile-form { font-weight: 600; }
+            gap: 0.5rem; }
+        .pvp-tile { border: 1px solid var(--pico-muted-border-color); border-left-width: 5px;
+            border-radius: 0.4rem; padding: 0.5rem 0.65rem; }
+        .pvp-tile-rank { font-size: 1.25rem; font-weight: 700; line-height: 1.15; }
+        .pvp-tile-form { font-weight: 600; margin: 0.1rem 0 0.25rem; }
         .pvp-tile-line { font-size: 0.8rem; color: var(--pico-muted-color); }
         .pvp-summary-empty { font-size: 0.9rem; color: var(--pico-muted-color); }
-        .pvp-league { margin-bottom: 1.2rem; }
-        .pvp-league h3 { margin-bottom: 0.3rem; }
+        /* One colour per league, carried by a pill and the tile's left edge.
+           Scanning the summary is then a colour match rather than reading
+           four similar-looking labels. The hues follow the ones the game and
+           the community already use for Great/Ultra/Master. */
+        .pvp-pill { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px;
+            font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em;
+            vertical-align: 0.12em; }
+        .lg-little { background: #2e7d32; color: #fff; }
+        .lg-great  { background: #1565c0; color: #fff; }
+        .lg-ultra  { background: #f9a825; color: #1f1f1f; }
+        .lg-master { background: #6a1b9a; color: #fff; }
+        .pvp-tile.lg-little { border-left-color: #2e7d32; }
+        .pvp-tile.lg-great  { border-left-color: #1565c0; }
+        .pvp-tile.lg-ultra  { border-left-color: #f9a825; }
+        .pvp-tile.lg-master { border-left-color: #6a1b9a; }
+        .pvp-tile.lg-little, .pvp-tile.lg-great,
+        .pvp-tile.lg-ultra, .pvp-tile.lg-master { background: transparent; }
+        .pvp-league { margin-bottom: 2rem; }
+        .pvp-league h3 { margin-bottom: 0.5rem; display: flex; align-items: center;
+            gap: 0.5rem; flex-wrap: wrap; }
         .pvp-league table { margin-bottom: 0.3rem; }
         .pvp-league td, .pvp-league th { padding: 0.35rem 0.5rem; font-size: 0.92rem; }
         .pvp-rank-top { color: #2e7d32; font-weight: 700; }
@@ -338,6 +427,7 @@ PVP_STYLES = """
         .pvp-target { font-weight: 700; }
         .pvp-note { font-size: 0.85rem; color: var(--pico-muted-color); margin: 0.1rem 0 0; }
         .pvp-nofit { color: var(--pico-muted-color); }
+        .pvp-lang { text-align: right; margin: -0.4rem 0 0.6rem; font-size: 0.85rem; }
 """
 
 
@@ -345,12 +435,34 @@ PVP_STYLES = """
 # the box is idle -- but for latency: clicking an IV dot must repaint without
 # a round trip, and the rank tables depend only on base stats and the cap, so
 # they are computed once on load and then only looked up.
-PVP_SCRIPT = """
+# Raw string on purpose. This block is JavaScript that is written out
+# verbatim, and a plain """ string would interpret backslash escapes here
+# *before* the browser ever sees them. That bit once: a \" meant as a JS
+# escape arrived at the browser as a bare ", which closed the surrounding
+# string literal and made the whole file a syntax error -- so the search box
+# and the IV dots died together, with nothing in the HTML to show for it.
+# With r""" what is written is what is served. Prefer single quotes for JS
+# strings that contain HTML attributes, so no escaping is needed at all.
+PVP_SCRIPT = r"""
 (function () {
   "use strict";
   var D = window.PVP_DATA;
   var CPM = D.cpm, LEVELS = D.levels, FAMILY = D.family, LEAGUES = D.leagues;
   var TARGET = D.target, MAXLV = D.maxLevel;
+
+  var T = D.lang === "en" ? {
+    cap: " <small>(max %s CP)</small>", nocap: " <small>(no cap)</small>",
+    form: "Form", level: "Level", cp: "CP", rank: "Rank", prod: "Stat product",
+    nofit: "over the cap, even at level 1",
+    atLevel: "At level %s the line shows: ",
+    empty: "IV %s: nothing in the top 5 % of any league. Full numbers below."
+  } : {
+    cap: " <small>(max. %s WP)</small>", nocap: " <small>(ohne Limit)</small>",
+    form: "Form", level: "Level", cp: "WP", rank: "Rang", prod: "Statwert",
+    nofit: "über dem Limit, auch auf Level 1",
+    atLevel: "Auf Level %s zeigt die Reihe: ",
+    empty: "IV %s: nichts in den besten 5 % einer Liga. Vollständige Zahlen unten."
+  };
 
   // The species list is ~1660 entries and identical on every page, so it is
   // fetched once from a cacheable endpoint instead of being inlined into each
@@ -437,14 +549,13 @@ PVP_SCRIPT = """
           : '<a href="/pvp/' + mon.slug + "/" + iv.join("-") + '">' + mon.name + "</a>";
         if (!fits) {
           rows.push("<tr><td>" + name +
-            '</td><td colspan="4" class="pvp-nofit">über dem Limit, auch auf Level 1</td></tr>');
+            '</td><td colspan="4" class="pvp-nofit">' + T.nofit + "</td></tr>");
           return;
         }
         var share = t.best ? (t.sp[key] / t.best * 100) : 0;
         rows.push("<tr><td>" + name + "</td><td>" + fmtLevel(t.lv[key]) + "</td><td>" +
           t.cp[key] + '</td><td class="' + rankClass(t.rank[key], t.count) + '">#' +
-          t.rank[key] + " <small>/ " + t.count + "</small></td><td>" +
-          share.toFixed(2) + "%</td></tr>");
+          t.rank[key] + "</td><td>" + share.toFixed(2) + "%</td></tr>");
       });
 
       // The point of the whole page: at the level the SELECTED form needs,
@@ -456,14 +567,16 @@ PVP_SCRIPT = """
           var c = cpAtLevel(mon, iv, targetLevel);
           return mon.name + " " + (c === null ? "?" : c);
         });
-        note = '<p class="pvp-note">Auf Level ' + fmtLevel(targetLevel) +
-          " zeigt die Reihe: " + parts.join(" · ") + "</p>";
+        note = '<p class="pvp-note">' +
+          T.atLevel.replace("%s", fmtLevel(targetLevel)) + parts.join(" · ") + "</p>";
       }
 
-      out.push('<section class="pvp-league"><h3>' + lg.label +
-        (lg.cap ? " <small>(max. " + lg.cap + " WP)</small>" : " <small>(ohne Limit)</small>") +
-        "</h3><table><thead><tr><th>Form</th><th>Level</th><th>WP</th><th>Rang</th>" +
-        "<th>Statwert</th></tr></thead><tbody>" + rows.join("") + "</tbody></table>" +
+      out.push('<section class="pvp-league"><h3><span class="pvp-pill lg-' + lg.key +
+        '">' + lg.label + "</span>" +
+        (lg.cap ? T.cap.replace("%s", lg.cap) : T.nocap) +
+        "</h3><table><thead><tr><th>" + T.form + "</th><th>" + T.level + "</th><th>" +
+        T.cp + "</th><th>" + T.rank + "</th><th>" + T.prod +
+        "</th></tr></thead><tbody>" + rows.join("") + "</tbody></table>" +
         note + "</section>");
     });
     var target = document.getElementById("pvp-results");
@@ -479,22 +592,22 @@ PVP_SCRIPT = """
     var box = document.getElementById("pvp-summary");
     if (!box) return;
     if (!matches.length) {
-      box.innerHTML = '<p class="pvp-summary-empty">IV ' + iv.join("/") +
-        ": nichts in den besten 5 % einer Liga. Die vollständigen Zahlen stehen unten.</p>";
+      box.innerHTML = '<p class="pvp-summary-empty">' +
+        T.empty.replace("%s", iv.join("/")) + "</p>";
       return;
     }
     matches.sort(function (a, b) {
       return (a.rank / a.count) - (b.rank / b.count) || a.rank - b.rank;
     });
     var tiles = matches.slice(0, 6).map(function (m) {
-      return '<div class="pvp-tile ' + (m.cls === "pvp-rank-top" ? "top" : "good") + '">' +
-        '<div class="pvp-tile-rank ' + m.cls + '">#' + m.rank +
-        ' <small class="pvp-tile-line">/ ' + m.count + "</small></div>" +
+      return '<div class="pvp-tile lg-' + m.lg.key + '">' +
+        '<div class="pvp-tile-rank ' + m.cls + '">#' + m.rank + "</div>" +
         '<div class="pvp-tile-form">' + m.mon.name + "</div>" +
-        '<div class="pvp-tile-line">' + m.lg.label + " · L" + fmtLevel(m.lv) +
-        " · " + m.cp + " WP</div></div>";
+        '<span class="pvp-pill lg-' + m.lg.key + '">' + m.lg.label + "</span> " +
+        '<span class="pvp-tile-line">L' + fmtLevel(m.lv) + " · " + m.cp + " " +
+        T.cp + "</span></div>";
     }).join("");
-    box.innerHTML = "<h3>Auf einen Blick</h3><div class=\"pvp-tiles\">" + tiles + "</div>";
+    box.innerHTML = '<div class="pvp-tiles">' + tiles + "</div>";
   }
 
   // ---- IV dots: one click per stat, clicking the lit dot again clears to 0.
@@ -539,9 +652,14 @@ PVP_SCRIPT = """
     if (!q) return [];
     var hits = [];
     for (var i = 0; i < INDEX.length; i++) {
-      var pos = INDEX[i][1].toLowerCase().indexOf(q);
+      // Entry is [slug, English name, icon, German name]. Both names are
+      // matched regardless of the display language.
+      var en = (INDEX[i][1] || "").toLowerCase();
+      var de = (INDEX[i][3] || "").toLowerCase();
+      var pos = en.indexOf(q);
+      if (pos < 0) pos = de.indexOf(q);
       if (pos < 0) continue;
-      hits.push([pos === 0 ? 0 : 1, pos, INDEX[i][1].length, INDEX[i]]);
+      hits.push([pos === 0 ? 0 : 1, pos, en.length, INDEX[i]]);
       if (hits.length > 400) break;
     }
     hits.sort(function (x, y) { return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; });
@@ -552,8 +670,12 @@ PVP_SCRIPT = """
     shown = search(box.value);
     active = -1;
     list.innerHTML = shown.map(function (e) {
+      var primary = D.lang === "de" ? (e[3] || e[1]) : e[1];
+      var secondary = D.lang === "de" ? (e[3] && e[3] !== e[1] ? e[1] : "") : (e[3] || "");
       return '<li data-slug="' + e[0] + '"><img loading="lazy" alt="" src="' +
-        (e[2] || "") + '"><span>' + e[1] + "</span></li>";
+        (e[2] || "") + '"><span>' + primary +
+        (secondary ? ' <small class="pvp-tile-line">' + secondary + "</small>" : "") +
+        "</span></li>";
     }).join("");
   }
 
@@ -600,7 +722,7 @@ def _dots_row(label, slot, value):
     )
 
 
-def render_pvp_page(index, slug, iv):
+def render_pvp_page(index, slug, iv, lang=DEFAULT_LANG):
     """The calculator page for one species, or the empty search page.
 
     Everything the browser needs is inlined except the species list, which is
@@ -615,6 +737,7 @@ def render_pvp_page(index, slug, iv):
 
     levels = [level for level in LEVELS if level <= PLAIN_MAX_LEVEL]
     payload = {
+        "lang": lang,
         "levels": levels,
         "cpm": [CPM[level] for level in levels],
         "maxLevel": PLAIN_MAX_LEVEL,
@@ -625,19 +748,27 @@ def render_pvp_page(index, slug, iv):
         ],
         "family": [
             {
-                "slug": member["slug"], "name": member["name"],
+                "slug": member["slug"], "name": named(member, lang),
                 "atk": member["atk"], "def": member["def"], "sta": member["sta"],
             }
             for member in chain
         ],
     }
 
+    other = "en" if lang == "de" else "de"
+    hint = ("Pokémon suchen – Teilname genügt, deutsch oder englisch"
+            if lang == "de" else
+            "Search Pokémon – part of the name is enough, German or English")
     parts = [
         '<section class="pvp-search">',
-        '    <input type="search" id="pvp-q" autocomplete="off" '
-        'placeholder="Pokémon suchen – Teilname genügt, z. B. &quot;king&quot;">',
+        f'    <input type="search" id="pvp-q" autocomplete="off" placeholder="{hint}">',
         '    <ul class="pvp-hits" id="pvp-hits"></ul>',
         "</section>",
+        # A plain link, not a JS toggle: the server sets the cookie and sends
+        # you back, so it works on first paint with no flash of the other
+        # language and without JavaScript.
+        f'<p class="pvp-lang"><a href="?lang={other}" rel="nofollow">'
+        f'{"English names" if other == "en" else "Deutsche Namen"}</a></p>',
     ]
 
     if not index:
@@ -650,6 +781,10 @@ def render_pvp_page(index, slug, iv):
             "<p>Such dir oben ein Pokémon aus. Die Seite rechnet dann für Little, "
             "Great, Ultra und Master durch, welche Stufe sich auf welches Level "
             "bringen lässt – und welche WP die Vorstufen dabei anzeigen.</p>"
+            if lang == "de" else
+            "<p>Pick a Pokémon above. The page then works out, for Little, Great, "
+            "Ultra and Master, which stage can go to which level – and what CP "
+            "the pre-evolutions show on the way.</p>"
         )
     else:
         image = entry.get("image") or ""
@@ -659,18 +794,23 @@ def render_pvp_page(index, slug, iv):
         )
         parts.append('<div class="pvp-head">')
         if image:
-            parts.append(f'    <img src="{_escape(image)}" alt="{_escape(entry["name"])}">')
+            label = named(entry, lang)
+        other_label = entry["name"] if lang == "de" else (entry.get("name_de") or "")
+        second = (f'<p class="pvp-note">{_escape(other_label)}</p>'
+                  if other_label and other_label != label else "")
+        parts.append(f'    <img src="{_escape(image)}" alt="{_escape(label)}">')
         parts.append(
-            f'    <div><h2>{_escape(entry["name"])}</h2>'
-            f'<p class="pvp-note">Basiswerte {entry["atk"]} / {entry["def"]} / '
-            f'{entry["sta"]}</p>{types}</div>'
+            f'    <div><h2>{_escape(label)}</h2>{second}'
+            f'<p class="pvp-note">{"Basiswerte" if lang == "de" else "Base stats"} '
+            f'{entry["atk"]} / {entry["def"]} / {entry["sta"]}</p>{types}</div>'
         )
         parts.append("</div>")
 
         parts.append('<div class="pvp-iv">')
-        parts.append(_dots_row("Angriff", 0, iv[0]))
-        parts.append(_dots_row("Verteidigung", 1, iv[1]))
-        parts.append(_dots_row("KP", 2, iv[2]))
+        labels = (("Angriff", "Verteidigung", "KP") if lang == "de"
+                  else ("Attack", "Defense", "HP"))
+        for slot, text in enumerate(labels):
+            parts.append(_dots_row(text, slot, iv[slot]))
         parts.append("</div>")
         parts.append('<div id="pvp-summary"></div>')
         parts.append('<div id="pvp-results"></div>')
@@ -678,12 +818,12 @@ def render_pvp_page(index, slug, iv):
         if relatives:
             links = " · ".join(
                 f'<a href="{PVP_ROUTE}/{_escape(m["slug"])}/{iv_path(*iv)}">'
-                f'{_escape(m["name"])}</a>'
+                f'{_escape(named(m, lang))}</a>'
                 for m in relatives
             )
-            parts.append(
-                f'<p class="pvp-note">Weitere Formen dieser Familie: {links}</p>'
-            )
+            intro = ("Weitere Formen dieser Familie" if lang == "de"
+                     else "Other forms in this family")
+            parts.append(f'<p class="pvp-note">{intro}: {links}</p>')
 
     script = (
         "<script>window.PVP_DATA = "

@@ -576,8 +576,76 @@ def populate_types(raids: list[dict], type_map: dict[str, list[str]]) -> None:
 # Schattenform wirkt im Kampf, nicht auf die Werte.
 PVP_SKIP_SUFFIXES = ("_SHADOW_FORM",)
 
+# German species names come from the game's own localisation file, so they are
+# the strings the player actually sees in the app -- not a third-party
+# translation and not PokeAPI's form-name guesswork, which this project
+# abandoned once already. Keyed by Pokedex number (pokemon_name_0258), which
+# Pokebattler hands us directly in pokedex.pokemonNum.
+GERMAN_TEXTS_URL = (
+    "https://raw.githubusercontent.com/PokeMiners/pogo_assets/master"
+    "/Texts/Latest%20APK/JSON/i18n_german.json"
+)
+# German builds form names as a prefix ("Alola-Rattfratz"), unlike the English
+# parenthetical. Anything not listed falls back to "Name (Suffix)" with the
+# English suffix -- harmless, because search matches both languages anyway.
+GERMAN_FORM_PREFIXES = {
+    "MEGA": "Mega-",
+    "GIGANTAMAX": "Gigadynamax-",
+    "ALOLA_FORM": "Alola-",
+    "ALOLAN_FORM": "Alola-",
+    "GALARIAN_FORM": "Galar-",
+    "GALARIAN": "Galar-",
+    "HISUIAN_FORM": "Hisui-",
+    "PALDEA_FORM": "Paldea-",
+    "PALDEAN_FORM": "Paldea-",
+}
 
-def build_pokemon_index(data: dict, icon_map: dict[str, str]) -> list[dict]:
+
+def fetch_german_names(session: requests.Session) -> dict[int, str]:
+    """Pokedex number -> German species name. Best effort, {} on failure.
+
+    The file is a flat [key, value, key, value, ...] list of ~36k pairs; we
+    keep only the pokemon_name_NNNN entries. A failure here must never fail
+    the run: without it the calculator is simply English-only.
+    """
+    try:
+        payload = fetch_json(GERMAN_TEXTS_URL, session)
+        flat = payload.get("data") if isinstance(payload, dict) else payload
+        pairs = dict(zip(flat[0::2], flat[1::2], strict=False))
+    except (requests.RequestException, ValueError, TypeError, AttributeError) as exc:
+        log.warning("No German names this run: %s", exc)
+        return {}
+    names: dict[int, str] = {}
+    for key, value in pairs.items():
+        match = re.fullmatch(r"pokemon_name_(\d{4})", key or "")
+        if match and isinstance(value, str) and value:
+            names[int(match.group(1))] = value
+    log.info("German names: %d entries", len(names))
+    return names
+
+
+def german_display_name(pokemon_id: str, dex: dict, german: dict[int, str]) -> str | None:
+    """Build the German name for one species, or None if we cannot."""
+    number = (dex or {}).get("pokemonNum")
+    base = german.get(number) if number else None
+    if not base:
+        return None
+    base_id = (dex or {}).get("pokemonId") or pokemon_id
+    if pokemon_id == base_id:
+        return base
+    suffix = pokemon_id[len(base_id):].lstrip("_")
+    if suffix in GERMAN_FORM_PREFIXES:
+        return f"{GERMAN_FORM_PREFIXES[suffix]}{base}"
+    # Mega X / Mega Y keep the letter behind the name, as the game does.
+    match = re.fullmatch(r"MEGA_([XY])", suffix)
+    if match:
+        return f"Mega-{base} {match.group(1)}"
+    return f"{base} ({suffix.removesuffix('_FORM').replace('_', ' ').title()})"
+
+
+def build_pokemon_index(
+    data: dict, icon_map: dict[str, str], german: dict[int, str] | None = None
+) -> list[dict]:
     """Every species with base stats, for the PvP IV calculator.
 
     Deliberately a flat list rather than the raid shape: this one is keyed by
@@ -612,6 +680,7 @@ def build_pokemon_index(data: dict, icon_map: dict[str, str]) -> list[dict]:
             "parent": mon.get("parentPokemonId"),
             "family": mon.get("familyId"),
             "image": icon_url(pokemon_id, icon_map),
+            "name_de": german_display_name(pokemon_id, mon.get("pokedex"), german or {}),
         })
     entries.sort(key=lambda entry: entry["name"])
     return entries
@@ -719,7 +788,8 @@ def main(argv: list[str] | None = None) -> int:
         species: list[dict] = []
         if args.pvp_output:
             try:
-                species = build_pokemon_index(pokedex, icon_map)
+                species = build_pokemon_index(
+                    pokedex, icon_map, fetch_german_names(session))
                 if args.icon_dir and species:
                     # ~1660 species against ~75 raid bosses, so this is
                     # budgeted: a few hundred per night, and after a week the

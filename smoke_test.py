@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Lightweight smoke tests run during Docker build."""
 
+import os
 import sys
 
 
@@ -430,16 +431,19 @@ def _pvp_fixture(tmp_path):
     payload = {"pokemon": [
         {"id": "PAWNIARD", "slug": "pawniard", "name": "Pawniard",
          "atk": 154, "def": 114, "sta": 128, "types": ["dark", "steel"],
-         "parent": None, "family": "FAMILY_PAWNIARD", "image": "/icons/a.png"},
+         "parent": None, "family": "FAMILY_PAWNIARD", "image": "/icons/a.png",
+         "name_de": "Gladiantri"},
         {"id": "BISHARP", "slug": "bisharp", "name": "Bisharp",
          "atk": 232, "def": 176, "sta": 163, "types": ["dark", "steel"],
          "parent": "PAWNIARD", "family": "FAMILY_PAWNIARD", "image": "/icons/b.png"},
         {"id": "KINGAMBIT", "slug": "kingambit", "name": "Kingambit",
          "atk": 238, "def": 203, "sta": 225, "types": ["dark", "steel"],
-         "parent": "BISHARP", "family": "FAMILY_PAWNIARD", "image": "/icons/c.png"},
+         "parent": "BISHARP", "family": "FAMILY_PAWNIARD", "image": "/icons/c.png",
+         "name_de": "Gladimperio"},
         {"id": "AZUMARILL", "slug": "azumarill", "name": "Azumarill",
          "atk": 112, "def": 152, "sta": 225, "types": ["water", "fairy"],
-         "parent": "MARILL", "family": "FAMILY_MARILL", "image": None},
+         "parent": "MARILL", "family": "FAMILY_MARILL", "image": None,
+         "name_de": "Azumarill"},
     ]}
     path = tmp_path + "/pvp_pokemon.json"
     with open(path, "w", encoding="utf-8") as handle:
@@ -530,6 +534,35 @@ def test_pvp_search_and_family(tmp_dir=None):
     print("OK: pvp search and family")
 
 
+def test_pvp_script_parses():
+    """Actually parse the page script, if a JS engine is around.
+
+    This is here because a shipped page once had a syntax error in it and
+    nothing caught it: the Python tests all passed, the HTML looked right,
+    the route returned 200, and the browser silently ran nothing -- search
+    box and IV dots both dead. `node --check` is the only check that would
+    have seen it. Skipped where node is absent (the Docker build image), so
+    it is a local and CI safety net rather than a build gate.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    import pvp
+    node = shutil.which("node")
+    if not node:
+        print("SKIP: pvp script parse (no node)")
+        return
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as handle:
+        handle.write(pvp.PVP_SCRIPT)
+        path = handle.name
+    try:
+        result = subprocess.run([node, "--check", path], capture_output=True, text=True)
+        assert result.returncode == 0, f"page script does not parse:\n{result.stderr}"
+    finally:
+        os.unlink(path)
+    print("OK: pvp script parses")
+
+
 def test_pvp_script_guards_missing_dom():
     """/pvp without a species has no IV rows -- the script must cope.
 
@@ -550,6 +583,76 @@ def test_pvp_script_guards_missing_dom():
             assert re.search(guard, tail), \
                 f"unguarded DOM lookup near: {script[match.start():match.start() + 70]!r}"
     print("OK: pvp script guards missing DOM")
+
+
+def test_pvp_language():
+    """German is the default, English is reachable, and both names are searched."""
+    import os
+    import tempfile
+    import pvp
+    from raid import application
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["PVP_DATA_PATH"] = _pvp_fixture(tmp)
+        try:
+            index = pvp.load_pokemon()
+            # Searching matches either language, whatever is displayed.
+            assert [h["slug"] for h in pvp.search_pokemon(index, "gladimp")] == ["kingambit"]
+            assert [h["slug"] for h in pvp.search_pokemon(index, "kingamb")] == ["kingambit"]
+            # Display follows the chosen language, with an English fallback
+            # for the species the game has no German string for yet.
+            assert pvp.named(index["kingambit"], "de") == "Gladimperio"
+            assert pvp.named(index["kingambit"], "en") == "Kingambit"
+            assert pvp.named(index["bisharp"], "de") == "Bisharp", "fallback to English"
+            assert pvp.lang_from_cookies("foo=1; pvp_lang=en; bar=2") == "en"
+            # Browser preference when no cookie, q-values honoured.
+            assert pvp.lang_from_accept("en-GB,en;q=0.9") == "en"
+            assert pvp.lang_from_accept("de-DE,de;q=0.9,en;q=0.8") == "de"
+            assert pvp.lang_from_accept("en;q=0.4, de;q=0.9") == "de", "q-value ignored"
+            assert pvp.lang_from_accept("fr-FR,fr;q=0.9") == "de", "unsupported -> default"
+            assert pvp.lang_from_accept("de;q=bogus") == "de", "unparsable q must not throw"
+            assert pvp.lang_from_accept(None) == "de"
+            # An explicit cookie beats the browser, in both directions.
+            assert pvp.choose_lang("pvp_lang=de", "en-US,en;q=0.9") == "de"
+            assert pvp.choose_lang("pvp_lang=en", "de-DE,de;q=0.9") == "en"
+            assert pvp.choose_lang("", "en-US,en;q=0.9") == "en"
+            assert pvp.lang_from_cookies("pvp_lang=klingon") == "de", "unknown falls back"
+            assert pvp.lang_from_cookies(None) == "de"
+
+            captured = {}
+
+            def start_response(status, headers):
+                captured["status"] = status
+                captured["headers"] = headers
+
+            def get(path, query="", cookie=""):
+                env = {"QUERY_STRING": query, "PATH_INFO": path, "SCRIPT_NAME": ""}
+                if cookie:
+                    env["HTTP_COOKIE"] = cookie
+                return b"".join(application(env, start_response)).decode()
+
+            html = get("/pvp/kingambit")
+            assert "Gladimperio" in html, "default page should be German"
+            html = get("/pvp/kingambit", cookie="pvp_lang=en")
+            assert '"name": "Kingambit"' in html, "cookie should switch the language"
+
+            # No cookie: follow the browser.
+            env = {"QUERY_STRING": "", "PATH_INFO": "/pvp/kingambit", "SCRIPT_NAME": "",
+                   "HTTP_ACCEPT_LANGUAGE": "en-US,en;q=0.9"}
+            html = b"".join(application(env, start_response)).decode()
+            assert '"name": "Kingambit"' in html, "browser preference ignored"
+            # Cookie must win over the browser.
+            env["HTTP_COOKIE"] = "pvp_lang=de"
+            html = b"".join(application(env, start_response)).decode()
+            assert "Gladimperio" in html, "cookie must override the browser"
+
+            get("/pvp/kingambit/0-15-13", query="lang=en")
+            assert captured["status"] == "302 Found", captured["status"]
+            headers = dict(captured["headers"])
+            assert headers["Location"] == "/pvp/kingambit/0-15-13", headers["Location"]
+            assert "pvp_lang=en" in headers["Set-Cookie"], headers["Set-Cookie"]
+        finally:
+            os.environ.pop("PVP_DATA_PATH", None)
+    print("OK: pvp language switch")
 
 
 def test_pvp_routes():
@@ -574,7 +677,11 @@ def test_pvp_routes():
 
             status, html = get("/pvp/kingambit/0-15-13")
             assert status == "200 OK", status
-            assert "Kingambit" in html and "Pawniard" in html, "family missing from page"
+            # German is the default, so the family shows German names where
+            # the fixture has them and falls back to English where it does not.
+            assert "Gladimperio" in html, "selected species missing from page"
+            assert "Gladiantri" in html, "pre-evolution missing from page"
+            assert "Bisharp" in html, "middle stage has no German name, must fall back"
             assert '"iv": [0, 15, 13]' in html, "IVs not handed to the page"
             assert "Little Cup" in html and "Master League" in html, "leagues missing"
 
@@ -606,7 +713,8 @@ if __name__ == "__main__":
              test_build_raid_entries, test_format_local,
              test_api_effectiveness, test_api_raids, test_watchdog,
              test_pvp_rank_tables, test_pvp_cpm_anchors, test_pvp_preevo_cp,
-             test_pvp_search_and_family, test_pvp_script_guards_missing_dom,
+             test_pvp_search_and_family, test_pvp_script_parses,
+             test_pvp_script_guards_missing_dom, test_pvp_language,
              test_pvp_routes]
     failed = 0
     for test in tests:

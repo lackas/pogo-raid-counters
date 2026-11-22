@@ -745,8 +745,11 @@ def pvp_index_response(start_response):
     """
     index = pvp.load_pokemon()
     payload = {
+        # [slug, English name, icon, German name]. Both names travel so the
+        # search box can match either one without a second request.
         "pokemon": [
-            [entry["slug"], entry["name"], entry.get("image") or ""]
+            [entry["slug"], entry["name"], entry.get("image") or "",
+             entry.get("name_de") or ""]
             for entry in sorted(index.values(), key=lambda e: e.get("name") or "")
         ]
     }
@@ -760,14 +763,38 @@ def pvp_index_response(start_response):
     return [encoded]
 
 
-def pvp_response(start_response, path_parts):
-    """/pvp, /pvp/<slug> and /pvp/<slug>/<a>-<d>-<s>."""
+def pvp_response(start_response, path_parts, environ=None, params=None):
+    """/pvp, /pvp/<slug> and /pvp/<slug>/<a>-<d>-<s>.
+
+    ?lang=de|en sets the cookie and redirects back to the clean path, so the
+    switch survives without JavaScript and the first paint is already in the
+    right language -- no flash of the other one.
+    """
+    environ = environ or {}
     slug = path_parts[0] if path_parts else ''
     iv = pvp.parse_iv_path(path_parts[1]) if len(path_parts) > 1 else (0, 0, 0)
+
+    requested = (params or {}).get('lang', [''])[0]
+    if requested:
+        lang = pvp.pick_lang(requested)
+        target = pvp.PVP_ROUTE + (f"/{slug}" if slug else "")
+        if slug and len(path_parts) > 1:
+            target += f"/{pvp.iv_path(*iv)}"
+        start_response('302 Found', [
+            ('Location', target),
+            # A year: it is a display preference, not a session.
+            ('Set-Cookie',
+             f"{pvp.LANG_COOKIE}={lang}; Path=/; Max-Age=31536000; "
+             "SameSite=Lax"),
+        ])
+        return [b'']
+
+    lang = pvp.choose_lang(environ.get('HTTP_COOKIE'),
+                           environ.get('HTTP_ACCEPT_LANGUAGE'))
     index = pvp.load_pokemon()
-    body, script = pvp.render_pvp_page(index, slug, iv)
+    body, script = pvp.render_pvp_page(index, slug, iv, lang)
     page = (
-        PVP_HEAD
+        PVP_HEAD.replace('lang="de"', f'lang="{lang}"')
         + '<style>' + pvp.PVP_STYLES + '\n        ' + TYPE_BADGE_STYLES + '</style>'
         + '</head><body><main class="container">'
         + '<nav><ul><li><strong>PvP-Rechner</strong></li></ul>'
@@ -798,7 +825,7 @@ def application(environ, start_response):
         return icon_response(start_response, path_info[len('icons/'):])
     if path_info == 'pvp' or path_info.startswith('pvp/'):
         pvp_parts = [p for p in path_info.split('/') if p][1:]
-        return pvp_response(start_response, pvp_parts)
+        return pvp_response(start_response, pvp_parts, environ, params)
     path_parts = [normalize_type(part) for part in path_info.split('/') if part]
     raid_type1 = path_parts[0] if path_parts else ''
     raid_type2 = path_parts[1] if len(path_parts) > 1 else ''
