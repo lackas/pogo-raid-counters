@@ -521,6 +521,14 @@ def test_pvp_search_and_family(tmp_dir=None):
         assert names == ["Bisharp"], names
         assert pvp.search_pokemon(index, "") == []
 
+        # A Mega is a temporary battle form, not an evolution step. Sorting
+        # children alphabetically once put "Mega Swampert" ahead of
+        # "Swampert", so looking up Mudkip never showed the stage people
+        # actually battle with.
+        assert not pvp._is_battle_form({"id": "SWAMPERT"})
+        assert pvp._is_battle_form({"id": "SWAMPERT_MEGA"})
+        assert pvp._is_battle_form({"id": "VENUSAUR_GIGANTAMAX"})
+
         chain = [m["name"] for m in pvp.family_chain(index, index["bisharp"])]
         assert chain == ["Pawniard", "Bisharp", "Kingambit"], chain
         # Walking from either end gives the same line.
@@ -583,8 +591,10 @@ def test_pvp_styles_are_reachable():
                 return True
             # Classes handed around as values -- rankClass() returns one,
             # classList.toggle takes one -- appear as bare quoted literals.
+            # Allows " pvp-tile-final" -- a class appended to an existing
+            # list carries a leading space inside the literal.
             return bool(re.search(
-                r"""["']""" + re.escape(name) + r"""["']""", literals))
+                r"""["']\s*""" + re.escape(name) + r"""\s*["']""", literals))
 
         dead = [name for name in selectors if not reachable(name)]
         assert not dead, f"CSS classes no element ever carries: {dead}"

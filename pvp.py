@@ -210,6 +210,15 @@ def search_pokemon(index, query, limit=12):
     return [hit[4] for hit in hits[:limit]]
 
 
+BATTLE_FORM_MARKERS = ("_MEGA", "_GIGANTAMAX", "_PRIMAL")
+
+
+def _is_battle_form(entry):
+    """Mega / Gigantamax / Primal: a temporary state, not an evolution stage."""
+    identifier = (entry or {}).get("id") or ""
+    return any(marker in identifier for marker in BATTLE_FORM_MARKERS)
+
+
 def family_chain(index, entry):
     """The evolution line containing `entry`, base form first.
 
@@ -240,7 +249,10 @@ def family_chain(index, entry):
         ]
         if not children:
             break
-        children.sort(key=lambda item: item.get("name") or "")
+        # Alphabetical order picked "Mega Swampert" over "Swampert" and the
+        # chain then skipped the form people actually use. Temporary battle
+        # forms are not an evolution step, so they sort last.
+        children.sort(key=lambda item: (_is_battle_form(item), item.get("name") or ""))
         child = children[0]
         seen.add(child.get("id"))
         chain.append(child)
@@ -394,11 +406,14 @@ PVP_STYLES = """
         .pvp-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
             gap: 0.5rem; }
         .pvp-tile { border: 1px solid var(--pico-muted-border-color); border-left-width: 5px;
-            border-radius: 0.4rem; padding: 0.5rem 0.65rem; }
-        .pvp-tile-head { display: flex; align-items: center; gap: 0.45rem; }
-        .pvp-tile-rank { font-size: 1.25rem; font-weight: 700; line-height: 1.15; }
-        .pvp-tile-form { font-weight: 600; margin: 0.15rem 0 0; line-height: 1.25; }
-        .pvp-tile-line { font-size: 0.8rem; color: var(--pico-muted-color); }
+            border-radius: 0.4rem; padding: 0.4rem 0.6rem; }
+        .pvp-tile-head { display: flex; align-items: baseline; gap: 0.4rem;
+            flex-wrap: wrap; line-height: 1.25; }
+        .pvp-tile-rank { font-size: 1.2rem; font-weight: 700; }
+        .pvp-tile-form { font-weight: 600; }
+        .pvp-tile-line { font-size: 0.8rem; color: var(--pico-muted-color);
+            margin-top: 0.1rem; }
+        .pvp-tile-final { box-shadow: inset 0 0 0 1px var(--pico-muted-border-color); }
         .pvp-summary-empty { font-size: 0.9rem; color: var(--pico-muted-color); }
         /* One colour per league, carried by a pill and the tile's left edge.
            Scanning the summary is then a colour match rather than reading
@@ -530,6 +545,12 @@ PVP_SCRIPT = r"""
   // "Worth keeping" cut-off. Top 5% of 4096 is rank 205 -- generous enough
   // that a decent spread shows up, tight enough that the summary stays short.
   var MATCH_SHARE = 0.05;
+  // The stage you actually battle with is the last one in the line, so its
+  // numbers are always shown even when its rank is unremarkable -- looking up
+  // Mudkip almost always means wanting the Swampert values. Little Cup is the
+  // exception where an early stage is the point, and that still surfaces via
+  // the ordinary top-5% rule.
+  var FINAL = FAMILY.length ? FAMILY[FAMILY.length - 1].slug : null;
 
   function render(iv) {
     var key = (iv[0] << 8) | (iv[1] << 4) | iv[2];
@@ -539,9 +560,10 @@ PVP_SCRIPT = r"""
       FAMILY.forEach(function (mon) {
         var t = TABLES[mon.slug][lg.key];
         var fits = t.sp[key] > 0;
-        if (fits && t.rank[key] <= t.count * MATCH_SHARE) {
+        var isFinal = mon.slug === FINAL;
+        if (fits && (isFinal || t.rank[key] <= t.count * MATCH_SHARE)) {
           matches.push({ mon: mon, lg: lg, rank: t.rank[key], count: t.count,
-                         lv: t.lv[key], cp: t.cp[key],
+                         lv: t.lv[key], cp: t.cp[key], isFinal: isFinal,
                          cls: rankClass(t.rank[key], t.count) });
         }
         if (mon.slug === TARGET && fits) targetLevel = t.lv[key];
@@ -597,17 +619,22 @@ PVP_SCRIPT = r"""
         T.empty.replace("%s", iv.join("/")) + "</p>";
       return;
     }
+    // Final stage first, in league order, then everything else by percentile.
     matches.sort(function (a, b) {
+      if (a.isFinal !== b.isFinal) return a.isFinal ? -1 : 1;
+      if (a.isFinal) return LEAGUES.indexOf(a.lg) - LEAGUES.indexOf(b.lg);
       return (a.rank / a.count) - (b.rank / b.count) || a.rank - b.rank;
     });
-    var tiles = matches.slice(0, 6).map(function (m) {
+    var tiles = matches.slice(0, 8).map(function (m) {
       // Rank and league pill share the first line: they are the two things
       // being scanned for, and stacking them left a hole in every tile.
-      return '<div class="pvp-tile lg-' + m.lg.key + '">' +
+      // Rank, name and league pill share one line; the numbers go under it.
+      // Two lines per tile, no blank row in the middle.
+      return '<div class="pvp-tile lg-' + m.lg.key +
+        (m.isFinal ? " pvp-tile-final" : "") + '">' +
         '<div class="pvp-tile-head"><span class="pvp-tile-rank ' + m.cls + '">#' +
-        m.rank + '</span><span class="pvp-pill lg-' + m.lg.key + '">' +
-        m.lg.label + "</span></div>" +
-        '<div class="pvp-tile-form">' + m.mon.name + "</div>" +
+        m.rank + '</span><span class="pvp-tile-form">' + m.mon.name + "</span>" +
+        '<span class="pvp-pill lg-' + m.lg.key + '">' + m.lg.label + "</span></div>" +
         '<div class="pvp-tile-line">L' + fmtLevel(m.lv) + " · " + m.cp + " " +
         T.cp + "</div></div>";
     }).join("");
